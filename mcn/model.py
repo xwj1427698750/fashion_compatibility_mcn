@@ -34,8 +34,8 @@ class CompatModel(nn.Module):
         cnn.fc = nn.Linear(cnn.fc.in_features, embed_size) #更换原先resnet的最后一层
         self.cnn = cnn
         self.need_rep = need_rep
-        self.num_rela = 15 * len(conv_feats)
-        self.bn = nn.BatchNorm1d(self.num_rela)  # 5x5 relationship matrix have 25 elements
+        self.num_rela = 10 * len(conv_feats)
+        self.bn = nn.BatchNorm1d(self.num_rela)  # 4x4 relationship matrix have 16 elements, 其中10个元素是不重复的
 
         # Define predictor part
         if self.mlp_layers > 0:                  #套装搭配预测模块的多层感知机
@@ -59,14 +59,14 @@ class CompatModel(nn.Module):
         # Type specified masks
         # l1, l2, l3 is the masks for feature maps for the beginning layers
         # not suffix one is for the last layer
-        # 15是comparsion matrix中不重复的元素个数
-        self.masks = nn.Embedding(15, embed_size)
+        # 10是comparsion matrix中不重复的元素个数
+        self.masks = nn.Embedding(10, embed_size)
         self.masks.weight.data.normal_(0.9, 0.7)
-        self.masks_l1 = nn.Embedding(15, 256)
+        self.masks_l1 = nn.Embedding(10, 256)
         self.masks_l1.weight.data.normal_(0.9, 0.7)
-        self.masks_l2 = nn.Embedding(15, 512)
+        self.masks_l2 = nn.Embedding(10, 512)
         self.masks_l2.weight.data.normal_(0.9, 0.7)
-        self.masks_l3 = nn.Embedding(15, 1024)
+        self.masks_l3 = nn.Embedding(10, 1024)
         self.masks_l3.weight.data.normal_(0.9, 0.7)
 
         # Semantic embedding model
@@ -168,21 +168,21 @@ class CompatModel(nn.Module):
             rep: the representations of the second last year, which is 2048-d for resnet-50 backend
         """
         batch_size, item_num, _, _, img_size = images.shape
-        images = torch.reshape(images, (-1, 3, img_size, img_size))  # (batch_size*item_num->16*5, 3, 224, 224)
+        images = torch.reshape(images, (-1, 3, img_size, img_size))  # (batch_size*item_num->16*4, 3, 224, 224)
         if self.need_rep:
             features, *rep = self.cnn(images)
             rep_l1, rep_l2, rep_l3, rep_l4, rep = rep  # 左侧的rep是倒数第二层的特征
             # [80,256,56,56],[80,512,28,28],[80,1024,14,14]
         else:
-            features = self.cnn(images)  # (batch_size * item_num -> 16*5, 1000)
+            features = self.cnn(images)  # (batch_size * item_num -> 16*4, 1000)
 
         relations = []
-        features = features.reshape(batch_size, item_num, -1)  # (batch_size->16, 5, 1000)
+        features = features.reshape(batch_size, item_num, -1)  # (batch_size->16, 4, 1000)
         masks = F.relu(self.masks.weight)
         # Comparison matrix
         if "4" in self.conv_feats:
-            for mi, (i, j) in enumerate(itertools.combinations_with_replacement([0, 1, 2, 3, 4], 2)):
-                # 一共有15轮的循环 (i,j)->(0,0),(0,1),..,(1,1),(1,2),...(2,2),....,(4,4)
+            for mi, (i, j) in enumerate(itertools.combinations_with_replacement([0, 1, 2, 3], 2)):
+                # 一共有10轮的循环 (i,j)->(0,0),(0,1),..,(1,1),(1,2),...(2,2),....,(4,4)
                 if self.pe_off:
                     left = F.normalize(features[:, i:i+1, :], dim=-1)  # (batch_size->16, 1, 1000)
                     right = F.normalize(features[:, j:j+1, :], dim=-1)
@@ -190,7 +190,7 @@ class CompatModel(nn.Module):
                     left = F.normalize(masks[mi] * features[:, i:i+1, :], dim=-1) # (batch_size->16, 1, 1000)
                     right = F.normalize(masks[mi] * features[:, j:j+1, :], dim=-1)
                 rela = torch.matmul(left, right.transpose(1, 2)).squeeze() # (batch_size->16)
-                relations.append(rela) # （15,16）
+                relations.append(rela) # （10,16）
 
         # Comparision at Multi-Layered representations
         rep_list = []
@@ -203,10 +203,10 @@ class CompatModel(nn.Module):
             rep_list.append(rep_l3); masks_list.append(self.masks_l3)
         for rep_li, masks_li in zip(rep_list, masks_list):
             rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, item_num, -1)
-            # rep_l1 (16,5,256), rep_l2 (16,5,512), rep_l3 (16,5,1024)
+            # rep_l1 (16,4,256), rep_l2 (16,4,512), rep_l3 (16,4,1024)
             masks_li = F.relu(masks_li.weight)
             # Enumerate all pairwise combination among the outfit then compare their features
-            for mi, (i, j) in enumerate(itertools.combinations_with_replacement([0, 1, 2, 3, 4], 2)):
+            for mi, (i, j) in enumerate(itertools.combinations_with_replacement([0, 1, 2, 3], 2)):
                 if self.pe_off:
                     left = F.normalize(masks_li[mi] * rep_li[:, i:i+1, :], dim=-1)  # (16, 1, rep_li.shape[-1])
                     right = F.normalize(masks_li[mi] * rep_li[:, j:j+1, :], dim=-1)
@@ -215,12 +215,12 @@ class CompatModel(nn.Module):
                     right = F.normalize(masks_li[mi] * rep_li[:, j:j+1, :], dim=-1)
                 rela = torch.matmul(left, right.transpose(1, 2)).squeeze()  # (16)
                 relations.append(rela)
-        # relations 是个列表，60个元素，每个元素size是torch.Size([16]) [15*4,16]
+        # relations 是个列表，10*4个元素，每个元素size是torch.Size([16]) [10*4,16]
         if batch_size == 1: # Inference during evaluation, which input one sample
             relations = torch.stack(relations).unsqueeze(0)
         else:
-            relations = torch.stack(relations, dim=1)  # stack之后 torch.Size([16, 60])
-        relations = self.bn(relations) # torch.Size([16, 60])
+            relations = torch.stack(relations, dim=1)  # stack之后 torch.Size([16, 10*4])
+        relations = self.bn(relations) # torch.Size([16, 10*4])
 
         # Predictor
         if self.mlp_layers == 0:
@@ -239,6 +239,6 @@ if __name__ == "__main__":
 
     device = torch.device("cpu:0")
     model = CompatModel(embed_size=1000,vocabulary=1000, need_rep=True).to(device)
-    images = torch.ones([16, 5, 3, 224, 224])
+    images = torch.ones([16, 4, 3, 224, 224])
     names = [torch.ones([5]) for _ in range(80)]
     output, vse_loss, tmasks_loss, features_loss = model(images, names)

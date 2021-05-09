@@ -66,7 +66,7 @@ def train(model, device, train_loader, val_loader, comment):
             images = images.to(device)
             # is_compat is a tensor([0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0]) length = batch_size
             # labels 显示样本的组成 tuple ,length = batch_size ['210524648_1', 'bottom_mean', '188731353_3', '207166525_4', 'accessory_mean']
-            # images.shape [16, 5, 3, 224, 224],[batch_size, item_length, C,H, W ]
+            # images.shape [16, 4, 3, 224, 224],[batch_size, item_length, C,H, W ]
             # names is a list with length 80 = 16 * 5, each item of which is a tensor 1-dim like:tensor([772,  68,  72, 208])
             # Forward   前向训练只需要 图像和文本数据
 

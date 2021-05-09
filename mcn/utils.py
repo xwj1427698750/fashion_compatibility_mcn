@@ -91,7 +91,7 @@ def config_logging(comment=None):
         handlers=[logging.FileHandler(log_fname), logging.StreamHandler()]
     )
 
-def prepare_dataloaders(root_dir="../data/images/", data_dir="../data/", batch_size=16,
+def prepare_dataloaders(root_dir="../data/images2/", data_dir="../data/", batch_size=16,
                         img_size=224, use_mean_img=True, neg_samples=True,
                         num_workers=1, collate_fn=collate_fn):
     transform = torchvision.transforms.Compose(
@@ -105,7 +105,7 @@ def prepare_dataloaders(root_dir="../data/images/", data_dir="../data/", batch_s
         data_dir=data_dir,
         transform=transform,
         use_mean_img=use_mean_img,
-        data_file="train_no_dup_with_category_3more_name.json",
+        data_file="train.json",
     )
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, collate_fn=collate_fn
@@ -115,7 +115,7 @@ def prepare_dataloaders(root_dir="../data/images/", data_dir="../data/", batch_s
         data_dir=data_dir,
         transform=transform,
         use_mean_img=use_mean_img,
-        data_file="valid_no_dup_with_category_3more_name.json",
+        data_file="valid.json",
     )
     val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_fn
@@ -125,7 +125,7 @@ def prepare_dataloaders(root_dir="../data/images/", data_dir="../data/", batch_s
         data_dir=data_dir,
         transform=transform,
         use_mean_img=use_mean_img,
-        data_file="test_no_dup_with_category_3more_name.json",
+        data_file="test.json",
     )
     test_loader = DataLoader(
         test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, collate_fn=collate_fn

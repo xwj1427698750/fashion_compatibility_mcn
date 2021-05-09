@@ -27,8 +27,8 @@ class CategoryDataset(Dataset):
         use_mean_img: Whether to use mean images to fill the blank part
         neg_samples: Whether generate negative sampled outfits
     """
-    def __init__(self, root_dir="../data/images/",
-                 data_file='train_no_dup_with_category_3more_name.json',
+    def __init__(self, root_dir="../data/images2/",
+                 data_file='train.json',
                  data_dir="../data", transform=None, use_mean_img=True, neg_samples=True):
         self.root_dir = root_dir
         self.data_dir = data_dir
@@ -41,7 +41,7 @@ class CategoryDataset(Dataset):
         self.vocabulary, self.word_to_idx = [], {}
         self.word_to_idx['UNK'] = len(self.word_to_idx)
         self.vocabulary.append('UNK')
-        with open(os.path.join(self.data_dir, 'final_word_dict.txt')) as f:
+        with open(os.path.join(self.data_dir, 'vocab.dat')) as f:
             for line in f:
                 name = line.strip().split()[0]
                 if name not in self.word_to_idx:
@@ -59,22 +59,18 @@ class CategoryDataset(Dataset):
         imgs = []
         labels = []
         names = []
-        for part in ['upper', 'bottom', 'shoe', 'bag', 'accessory']:
+        for part in ['upper', 'bottom', 'shoe', 'bag']:
             if part in to_change: # random choose a image from dataset with same category
                 choice = self.data[index]
                 while (choice[0] == set_id) or (part not in choice[1].keys()):
                     choice = random.choice(self.data)
-                img_path = os.path.join(self.root_dir, str(choice[0]), str(choice[1][part]['index'])+'.jpg')
+                img_path = os.path.join(self.root_dir, str(choice[1][part]['index'])+'.jpg')
                 names.append(torch.LongTensor(self.str_to_idx(choice[1][part]['name'])))
                 labels.append('{}_{}'.format(choice[0], choice[1][part]['index']))
             elif part in parts.keys():
-                img_path = os.path.join(self.root_dir, str(set_id), str(parts[part]['index'])+'.jpg')
+                img_path = os.path.join(self.root_dir, str(parts[part]['index'])+'.jpg')
                 names.append(torch.LongTensor(self.str_to_idx(parts[part]['name'])))
                 labels.append('{}_{}'.format(set_id, parts[part]['index']))
-            elif self.use_mean_img:
-                img_path = os.path.join(self.data_dir, part+'.png')
-                names.append(torch.LongTensor([]))  # mean_img embedding
-                labels.append('{}_{}'.format(part, 'mean'))
             else:
                 continue
             img = Image.open(img_path).convert('RGB')
@@ -109,19 +105,13 @@ class CategoryDataset(Dataset):
         question_id = "{}_{}".format(set_id, parts[question_part]['index'])
         imgs = []
         labels = []
-        for part in ['upper', 'bottom', 'shoe', 'bag', 'accessory']:
+        for part in ['upper', 'bottom', 'shoe', 'bag']:
             if part in parts.keys():
-                img_path = os.path.join(self.root_dir, str(set_id), str(parts[part]['index'])+'.jpg')
+                img_path = os.path.join(self.root_dir, str(parts[part]['index'])+'.jpg')
                 img = Image.open(img_path).convert('RGB')
                 img = self.transform(img)
                 imgs.append(img)
                 labels.append('{}_{}'.format(set_id, parts[part]['index']))
-            elif self.use_mean_img:
-                img_path = os.path.join(self.data_dir, part+'.png')
-                img = Image.open(img_path).convert('RGB')
-                img = self.transform(img)
-                imgs.append(img)
-                labels.append('{}_{}'.format(part, 'mean'))
         items = torch.stack(imgs)
 
         option_ids = [set_id]
@@ -133,7 +123,7 @@ class CategoryDataset(Dataset):
                 continue
             else:
                 option_ids.append(option[0])
-                img_path = os.path.join(self.root_dir, str(option[0]), str(option[1][question_part]['index'])+'.jpg')
+                img_path = os.path.join(self.root_dir, str(option[1][question_part]['index'])+'.jpg')
                 img = Image.open(img_path).convert('RGB')
                 img = self.transform(img)
                 options.append(img)
