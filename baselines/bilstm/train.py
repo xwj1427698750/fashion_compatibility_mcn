@@ -29,7 +29,7 @@ device = torch.device("cuda")
 
 # Dataloader
 train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader = prepare_dataloaders(
-    root_dir="../../data/images",
+    root_dir="../../data/images2",
     data_dir="../../data",
     img_size=299,
     batch_size=12,
@@ -73,7 +73,7 @@ def train(model, device, train_loader, val_loader, comment):
                 )
 
         logging.info("**Epoch {}**, Train Loss: {:.4f}".format(epoch, total_loss / batch_num))
-        torch.save(model.state_dict(), os.path.join("model{}.pth".format(comment)))
+        torch.save(model.state_dict(), os.path.join("model_bilstm{}.pth".format(comment)))
 
         # Validate phase
         model.eval()
@@ -82,7 +82,7 @@ def train(model, device, train_loader, val_loader, comment):
             lengths, images, names, offsets, set_ids, labels, is_compat = input_data
             image_seqs = images.to(device)  # (20+, 3, 224, 224)
             with torch.no_grad():
-                f_loss, b_loss, _ = model._forward_and_backward(image_seqs, lengths)
+                f_loss, b_loss, _ = model.model(image_seqs, names, lengths)
                 all_loss = f_loss + b_loss
             total_loss += all_loss.item()
 
