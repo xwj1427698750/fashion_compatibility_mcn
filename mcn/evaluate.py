@@ -18,7 +18,7 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--model_path', type=str, default="./model_train_relation_vse_type_cond_scales.pth")
+parser.add_argument('--model_path', type=str, default="./model_train.pth")
 args = parser.parse_args()
 
 print(args)
@@ -68,12 +68,8 @@ print("AUC: {:.4f}".format(metrics.roc_auc_score(targets, outputs)))
 is_correct = []
 for i in range(len(test_dataset)):
     print("\r#{}/{}".format(i, len(test_dataset)), end="", flush=True)
-    items, labels, question_part, question_id, options, option_labels = test_dataset.get_fitb_quesiton(
-        i
-    )
-    question_part = {"upper": 0, "bottom": 1, "shoe": 2, "bag": 3, "accessory": 4}.get(
-        question_part
-    )
+    items, labels, question_part, question_id, options, option_labels = test_dataset.get_fitb_quesiton(i)
+    question_part = {"upper": 0, "bottom": 1, "shoe": 2, "bag": 3}.get(question_part)
     images = [items]
 
     for option in options:

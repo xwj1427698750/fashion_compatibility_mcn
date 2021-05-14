@@ -220,7 +220,7 @@ class CompatModel(nn.Module):
             relations = torch.stack(relations).unsqueeze(0)
         else:
             relations = torch.stack(relations, dim=1)  # stack之后 torch.Size([16, 10*4])
-        relations = self.bn(relations) # torch.Size([16, 10*4])
+        relations = self.bn(relations)  # torch.Size([16, 10*4])
 
         # Predictor
         if self.mlp_layers == 0:

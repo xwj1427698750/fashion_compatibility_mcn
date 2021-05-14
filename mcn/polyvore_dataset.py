@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader, Dataset
 
 
 class CategoryDataset(Dataset):
-    """Dataset for polyvore with 5 categories(upper, bottom, shoe, bag, accessory),
+    """Dataset for polyvore with 4 categories(upper, bottom, shoe, bag),
     each suit has at least 3 items, the missing items will use a mean image.
 
     Args:
@@ -101,7 +101,7 @@ class CategoryDataset(Dataset):
             expect original composition get highest score
         """
         set_id, parts = self.data[index]
-        question_part = random.choice(list(parts)) #从parts中随机选择一个
+        question_part = random.choice(list(parts))  # 从parts中随机选择一个 ，获得parts中的keys形成的列表
         question_id = "{}_{}".format(set_id, parts[question_part]['index'])
         imgs = []
         labels = []
@@ -112,7 +112,7 @@ class CategoryDataset(Dataset):
                 img = self.transform(img)
                 imgs.append(img)
                 labels.append('{}_{}'.format(set_id, parts[part]['index']))
-        items = torch.stack(imgs)
+        items = torch.stack(imgs)  # 正确的搭配
 
         option_ids = [set_id]
         options = []
