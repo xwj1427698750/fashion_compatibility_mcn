@@ -183,6 +183,8 @@ for epoch in range(test_num):
     fitb_acc = fitb_test(test_dataset)
     auc_epochs.append(all_auc)
     fitb_epochs.append(fitb_acc)
+auc_epochs = np.array(auc_epochs)
+fitb_epochs = np.array(fitb_epochs)
 print(f"average compat AUC is {auc_epochs.mean()} average fitb acc is {fitb_epochs.mean()}")
 
 
