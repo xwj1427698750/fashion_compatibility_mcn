@@ -18,7 +18,7 @@ device = torch.device("cuda")
 
 # Dataloader
 train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader = prepare_dataloaders(
-    root_dir="../../data/images",
+    root_dir="../../data/images2",
     data_dir="../../data",
     img_size=299,
     use_mean_img=False,
@@ -28,7 +28,7 @@ train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader 
 
 # Restore model parameters
 model = CompatModel(emb_size=emb_size, need_rep=False, vocabulary=len(train_dataset.vocabulary))
-model.load_state_dict(torch.load('model.pth'))
+model.load_state_dict(torch.load('model_bilstm.pth'))
 model.to(device)
 model.eval()
 
@@ -40,10 +40,10 @@ else:
     print("Extract cnn features...")
     test_features = {}
     for input_data in tqdm(test_loader):
-        lengths, images, names, offsets, set_ids, labels, is_compat = input_data
+        lengths, images, names, offsets, set_ids, labels, is_compat = input_data  # labels 16, 4, '405fd136820d009649939626804e124f_03733562716e2a53cc750cb2c62e36b0'
         image_seqs = images.to(device)
         with torch.no_grad():
-            emb_seqs = model.encoder_cnn(image_seqs)
+            emb_seqs = model.encoder_cnn(image_seqs)  # emb_seqs.shape is [48, 512],  48 = 3 * batch_size
         batch_ids = []
         for set_id, items in zip(set_ids, labels):
             for item in items:
@@ -55,11 +55,11 @@ else:
 
 test_features_ids = []
 test_features_matrix = []
-for k, v in test_features.items():
+for k, v in test_features.items():  # k is 'efef21bbff0349aeb7eadf22be80f91e_b6308f79e8fafeb1d2291b51344826fc' v : ndarray:(512)
     test_features_matrix.append(v)
     test_features_ids.append(k)
 test_features_matrix = torch.tensor(np.stack(test_features_matrix)).to(device)
-
+# test_features_matrix  torch.Size([3684, 512])
 # Compatibility AUC test
 criterion = nn.CrossEntropyLoss()
 f_losses, b_losses, truths = [], [], []
@@ -68,7 +68,8 @@ test_dataset.neg_samples=True # need negative samples now
 for idx in trange(len(test_dataset)):
     input_data = test_dataset[idx]
     images, names, offsets, set_ids, labels, is_compat = input_data
-    lengths = torch.tensor([len(labels)]).to(device) # 1, 2, 3 predicts 2, 3, 4, so length-1
+    # images is ([4, 3, 299, 299])
+    lengths = torch.tensor([len(labels)]).to(device)  # 1, 2, 3 predicts 2, 3, 4, so length-1
     image_seqs = images.to(device)
 
     with torch.no_grad():
@@ -77,8 +78,8 @@ for idx in trange(len(test_dataset)):
     f_score = torch.matmul(f_output, test_features_matrix.t())
     b_score = torch.matmul(b_output, test_features_matrix.t())
 
-    f_targets = [test_features_ids.index(i) for i in labels[1:]] # (2, 3, 4, 5) 
-    b_targets = [test_features_ids.index(i) for i in labels[:-1][::-1]] # (4, 3, 2, 1)
+    f_targets = [test_features_ids.index(i) for i in labels[1:]]  # (2, 3, 4, 5)
+    b_targets = [test_features_ids.index(i) for i in labels[:-1][::-1]]  # (4, 3, 2, 1)
     f_loss = criterion(f_score, torch.tensor(f_targets).to(device))
     b_loss = criterion(b_score, torch.tensor(b_targets).to(device))
 
@@ -90,7 +91,7 @@ f_losses, b_losses, truths = np.array(f_losses), np.array(b_losses), np.array(tr
 f_auc = metrics.roc_auc_score(truths, -f_losses)
 b_auc = metrics.roc_auc_score(truths, -b_losses)
 all_auc = metrics.roc_auc_score(truths, -f_losses-b_losses)
-print('F_AUC: {:.4f}, B_AUC: {:.4f}, ALL_AUC: {:.4f}'.format(f_auc, b_auc, all_auc))
+print('Compatibility: F_AUC: {:.4f}, B_AUC: {:.4f}, ALL_AUC: {:.4f}'.format(f_auc, b_auc, all_auc))
 # F_AUC: 0.6587, B_AUC: 0.6656, ALL_AUC: 0.6651
 
 # Fill in the blank test
@@ -161,7 +162,7 @@ for idx in trange(len(test_dataset)):
     else:
         is_correct_all.append(False)
 
-print("F_ACC: {:.4f}, B_ACC: {:.4f}, All_ACC: {:.4f}".format(
+print("FITB : F_ACC: {:.4f}, B_ACC: {:.4f}, All_ACC: {:.4f}".format(
     sum(is_correct_f) / len(is_correct_f),
     sum(is_correct_b) / len(is_correct_b),
     sum(is_correct_all) / len(is_correct_all)

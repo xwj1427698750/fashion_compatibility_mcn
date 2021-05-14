@@ -25,7 +25,7 @@ epochs = 30
 batch_size = 8
 emb_size = 512
 log_step = 2
-device = torch.device("cuda")
+device = torch.device("cuda:1")
 
 # Dataloader
 train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader = prepare_dataloaders(
@@ -53,6 +53,7 @@ def train(model, device, train_loader, val_loader, comment):
         model.train()
         for batch_num, input_data in enumerate(train_loader, 1):
             lengths, images, names, offsets, set_ids, labels, is_compat = input_data
+            # [4]*12 images [48, 3, 299, 299]) names list len 48 ,labels:tuple-len-12-(list-len-4('set_id'-'item-id')) is_compat:tuple-len-12(True/False)
             image_seqs = images.to(device)  # (20+, 3, 224, 224)
 
             # forward propagation
@@ -82,7 +83,7 @@ def train(model, device, train_loader, val_loader, comment):
             lengths, images, names, offsets, set_ids, labels, is_compat = input_data
             image_seqs = images.to(device)  # (20+, 3, 224, 224)
             with torch.no_grad():
-                f_loss, b_loss, _ = model.model(image_seqs, names, lengths)
+                f_loss, b_loss, _ = model(image_seqs, names, lengths)
                 all_loss = f_loss + b_loss
             total_loss += all_loss.item()
 

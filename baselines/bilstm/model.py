@@ -4,6 +4,8 @@ import torchvision.models as models
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence, pad_sequence
 import inception
 import torch.nn.functional as F
+from polyvore_dataset import CategoryDataset, lstm_collate_fn
+from utils import prepare_dataloaders, config_logging
 
 class EncoderCNN(nn.Module):
     def __init__(self, embed_size, need_rep=False):
@@ -50,12 +52,8 @@ class LSTMModel(nn.Module):
 
     def _init_hidden(self, batch_size):
         device = next(self.parameters()).device
-        return (torch.zeros(self.n_layers*self.n_directions,
-                            batch_size,
-                            self.hidden_size).to(device),
-                torch.zeros(self.n_layers*self.n_directions,
-                            batch_size,
-                            self.hidden_size).to(device))
+        return (torch.zeros(self.n_layers*self.n_directions,batch_size,self.hidden_size).to(device),
+                torch.zeros(self.n_layers*self.n_directions,batch_size,self.hidden_size).to(device))
 
     def forward(self, input, seq_lengths):
         batch_size = input.size(0)
@@ -89,8 +87,8 @@ class CompatModel(nn.Module):
             lengths (list): Number of items in each outfit
         """
         # Extract visual features from image sequqnece
-        emb_seqs, rep = self.encoder_cnn(images) # (20+, 512)
-
+        emb_seqs, rep = self.encoder_cnn(images)  # (20+, 512)
+        # emb_seqs.shape is [48, 512] rep.shape is [48, 2048]
         # BiLSTM part
         f_loss, b_loss = self._rnn(emb_seqs, lengths)
 
@@ -104,7 +102,7 @@ class CompatModel(nn.Module):
         """
         # Extract visual features from image sequqnece
         if self.need_rep:
-            emb_seqs, rep = self.encoder_cnn(images) # (20+, 512)
+            emb_seqs, rep = self.encoder_cnn(images)  # (20+, 512)
         else:
             emb_seqs = self.encoder_cnn(images)
 
@@ -163,33 +161,33 @@ class CompatModel(nn.Module):
         """
         device = next(self.parameters()).device
 
-        # Generate input embeddings e.g. (1, 2, 3, 4)
+        # Generate input embeddings e.g. (1, 2, 3)
         input_emb_list = []
         start = 0
         for length in lengths:
-            input_emb_list.append(emb_seqs[start : start + length - 1])
+            input_emb_list.append(emb_seqs[start: start + length - 1])  # emb_seqs[start : start + length - 1] torch.Size([3, 512])
             start += length
         f_input_embs = pad_sequence(
             input_emb_list, batch_first=True
-        )  # (4, 7, 512) (1, 2, 3, 4)
+        )  # torch.Size([12, 3, 512])   (1, 2, 3)
         b_target_embs = pad_sequence(
             [self._flip_tensor(e) for e in input_emb_list], batch_first=True
-        )  # (4, 3, 2, 1)
+        )  # torch.Size([12, 3, 512])   (3, 2, 1)
 
-        # Generate target embeddings e.g. (2, 3, 4, 5)
+        # Generate target embeddings e.g. (2, 3, 4)
         target_emb_list = []
         start = 0
         for length in lengths:
-            target_emb_list.append(emb_seqs[start + 1 : start + length])
+            target_emb_list.append(emb_seqs[start + 1: start + length])
             start += length
         f_target_embs = pad_sequence(
             target_emb_list, batch_first=True
-        )  # (2, 3, 4, 5)
+        )  # (2, 3, 4) torch.Size([12, 3, 512])
         b_input_embs = pad_sequence(
             [self._flip_tensor(e) for e in target_emb_list], batch_first=True
-        )  # (5, 4, 3, 2)
+        )  # ( 4, 3, 2) torch.Size([12, 3, 512])
 
-        seq_lengths = torch.tensor([i - 1 for i in lengths]).to(device)
+        seq_lengths = torch.tensor([i - 1 for i in lengths]).to(device)  # seg_lens is [3] * 12
         f_target_embs = pack_padded_sequence(
             f_target_embs, seq_lengths, batch_first=True
         )[0]
@@ -198,13 +196,13 @@ class CompatModel(nn.Module):
         )[0]
 
         # Iterate through LSTM
-        f_output = self.f_rnn(f_input_embs, seq_lengths)
+        f_output = self.f_rnn(f_input_embs, seq_lengths)  # f_input_embs torch.Size([12, 3, 512])  -> f_output  torch.Size([36, 512])
         b_output = self.b_rnn(b_input_embs, seq_lengths)
 
         if not batch_loss:
-            return f_output, b_output
+            return f_output, b_output   # f_output  torch.Size([36, 512])
         else:
-            f_score = torch.matmul(f_output, f_target_embs.t())
+            f_score = torch.matmul(f_output, f_target_embs.t())  # f_target_embs 512 ,3864
             f_loss = self.criterion(f_score, torch.arange(f_score.shape[0]).to(device))
             b_score = torch.matmul(b_output, b_target_embs.t())
             b_loss = self.criterion(b_score, torch.arange(b_score.shape[0]).to(device))
@@ -219,3 +217,32 @@ class CompatModel(nn.Module):
         idx = torch.LongTensor(idx).to(device)
         flipped_tensor = tensor.index_select(0, idx)
         return flipped_tensor
+
+if __name__ == "__main__":
+    # Hyperparameters
+    epochs = 30
+    batch_size = 8
+    emb_size = 512
+    log_step = 2
+    device = torch.device("cuda")
+
+    # Dataloader
+    train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader = prepare_dataloaders(
+        root_dir="../../data/images2",
+        data_dir="../../data",
+        img_size=299,
+        batch_size=12,
+        use_mean_img=False,
+        neg_samples=False,
+        collate_fn=lstm_collate_fn,
+    )
+
+    # Model
+    model = CompatModel(emb_size=emb_size, need_rep=True, vocabulary=len(train_dataset.vocabulary))
+    mode = model.to(device)
+    for batch_num, input_data in enumerate(train_loader, 1):
+        lengths, images, names, offsets, set_ids, labels, is_compat = input_data
+        image_seqs = images.to(device)  # (20+, 3, 224, 224)
+
+        # forward propagation
+        f_loss, b_loss, vse_loss = model(image_seqs, names, lengths)
