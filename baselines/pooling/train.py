@@ -21,7 +21,7 @@ config_logging(comment)
 
 # Dataloader
 train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader = prepare_dataloaders(
-    root_dir="../../data/images",
+    root_dir="../../data/images2",
     data_dir="../../data",
     batch_size=12
 )
