@@ -27,7 +27,7 @@ class CompatModel(nn.Module):
         self.cnn = cnn
         self.need_rep = need_rep
         self.bn = nn.BatchNorm1d(embed_size)
-        self.fc1 = nn.Linear(embed_size*5, embed_size)
+        self.fc1 = nn.Linear(embed_size*4, embed_size)
         self.fc2 = nn.Linear(embed_size, 1)
         self.sigmoid = nn.Sigmoid()
 
@@ -140,8 +140,7 @@ class CompatModel(nn.Module):
             features = self.cnn(images)
 
         # Concatenation
-        features = features.reshape(batch_size, -1)
-
+        features = features.reshape(batch_size, -1)  # torch.Size([12, 4000])
         # Predictor
         out = F.relu(self.bn(self.fc1(features)))
         out = self.fc2(out)
