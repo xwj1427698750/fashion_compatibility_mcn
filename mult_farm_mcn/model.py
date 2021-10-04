@@ -155,7 +155,10 @@ class CompatModel(nn.Module):
         Conditional Similarity Networks: https://arxiv.org/abs/1603.07810
         """
         # Type embedding loss
-        tmasks_loss = tmasks.norm(1) / len(tmasks)
+        # tmasks_loss = tmasks.norm(1) / len(tmasks)
+        tmasks_loss = 0.0
+        for tmask in tmasks:
+            tmasks_loss = tmasks_loss + tmask.norm(1) / len(tmask)
         features_loss = features.norm(2) / np.sqrt((features.shape[0] * features.shape[1]))
         return tmasks_loss, features_loss
 
@@ -179,6 +182,9 @@ class CompatModel(nn.Module):
         relations = []
         features = features.reshape(batch_size, item_num, -1)  # (batch_size->16, 4, 1000)
         masks = F.relu(self.masks.weight)
+
+        masks_weight = [masks]  # 函数需要返回的所有mask权值列表
+
         # Comparison matrix
         if "4" in self.conv_feats:
             for mi, (i, j) in enumerate(itertools.combinations_with_replacement([0, 1, 2, 3], 2)):
@@ -205,6 +211,9 @@ class CompatModel(nn.Module):
             rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, item_num, -1)
             # rep_l1 (16,4,256), rep_l2 (16,4,512), rep_l3 (16,4,1024)
             masks_li = F.relu(masks_li.weight)
+
+            masks_weight.append(masks_li)
+
             # Enumerate all pairwise combination among the outfit then compare their features
             for mi, (i, j) in enumerate(itertools.combinations_with_replacement([0, 1, 2, 3], 2)):
                 if self.pe_off: # 这个分支需要对比源代码判断一下
@@ -231,9 +240,9 @@ class CompatModel(nn.Module):
         if activate:
             out = self.sigmoid(out)
         if self.need_rep:
-            return out, features, masks, rep
+            return out, features, masks_weight, rep
         else:
-            return out, features, masks
+            return out, features, masks_weight
 
     def _compute_feature_fusion(self, images, activate=True):
         """Extract feature vectors from input images.
