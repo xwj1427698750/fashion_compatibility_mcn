@@ -54,10 +54,12 @@ class BestSaver(object):
 
         self.save_path = save_path
         self.best = float('-inf')
+        self.best_epoch = 0  # 取得最佳成绩的轮次
 
-    def save(self, metric, data):
+    def save(self, metric, data, epoch):
         if metric > self.best:
             self.best = metric
+            self.best_epoch = epoch
             torch.save(data, self.save_path)
             logging.info("Saved best model to {}".format(self.save_path))
 
