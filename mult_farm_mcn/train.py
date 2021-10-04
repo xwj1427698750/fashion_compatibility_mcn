@@ -64,9 +64,10 @@ def train(model, device, train_loader, val_loader, comment):
         for batch_num, batch in enumerate(train_loader, 1):
             lengths, images, names, offsets, set_ids, labels, is_compat = batch
             images = images.to(device)
+            # offsets没用到
             # is_compat is a tensor([0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0]) length = batch_size
-            # labels 显示样本的组成 tuple ,length = batch_size ['210524648_1', 'bottom_mean', '188731353_3', '207166525_4', 'accessory_mean']
-            # images.shape [16, 4, 3, 224, 224],[batch_size, item_length, C,H, W ]
+            # labels 显示样本的组成 单独的项为(set_id)_(index:单张照片的名字),  ['21027552963e099f780f73a5ffde30ed_be9627e0c2e43ee96017e288b03eed96', ..], length = batch_size
+            # images.shape [16, 4, 3, 224, 224], [batch_size, item_length, C, H, W ]
             # names is a list with length 80 = 16 * 5, each item of which is a tensor 1-dim like:tensor([772,  68,  72, 208])
             # Forward   前向训练只需要 图像和文本数据
 
@@ -128,9 +129,9 @@ def train(model, device, train_loader, val_loader, comment):
         logging.info("Positive loss: {:.4f}".format(positive_loss))
         positive_acc = sum(outputs[targets==1]>0.5) / len(outputs)
         logging.info("Positive accuracy: {:.4f}".format(positive_acc))
-
         # Save best model
-        saver.save(auc, model.state_dict())
+        saver.save(auc, model.state_dict(), epoch)
+        logging.info("Best AUC is : {:.4f} Best_epoch is {}".format(saver.best, saver.best_epoch))  # 输出已经选择好的最佳模型
 
 if __name__ == "__main__":
     train(model, device, train_loader, val_loader, comment)
