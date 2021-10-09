@@ -143,7 +143,7 @@ class ResNet(nn.Module):
         x = self.maxpool(x) #torch.Size([80, 64, 112, 112])
 
         x = self.layer1(x)
-        rep_l1 = x          # torch.Size([80, 256, 56, 56])
+        rep_l1 = x          # torch.Size([80, 256, 56, 56]) 80 = batch_num * item_nums = 16 * 5;
         x = self.layer2(x)
         rep_l2 = x          # torch.Size([80, 512, 28, 28])
         x = self.layer3(x)
