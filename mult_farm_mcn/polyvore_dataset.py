@@ -27,7 +27,7 @@ class CategoryDataset(Dataset):
         use_mean_img: Whether to use mean images to fill the blank part
         neg_samples: Whether generate negative sampled outfits
     """
-    def __init__(self, root_dir="../data/images2/",
+    def __init__(self, root_dir="../data/images2/",  # images2对应的原始文件目录在/home/ices/xwj/graduation project/dataset/img/img_types/total/
                  data_file='train.json',
                  data_dir="../data", transform=None, use_mean_img=True, neg_samples=True):
         self.root_dir = root_dir
@@ -36,7 +36,7 @@ class CategoryDataset(Dataset):
         self.use_mean_img = use_mean_img
         self.data = json.load(open(os.path.join(data_dir, data_file)))
         self.data = [(k, v) for k, v in self.data.items()] # k:套装id,v:{套装对象}
-        self.neg_samples = neg_samples # if True, will randomly generate negative outfit samples
+        self.neg_samples = neg_samples  # if True, will randomly generate negative outfit samples
     
         self.vocabulary, self.word_to_idx = [], {}
         self.word_to_idx['UNK'] = len(self.word_to_idx)
@@ -59,15 +59,16 @@ class CategoryDataset(Dataset):
         imgs = []
         labels = []
         names = []
+        # 负样本的生成方式： 套装里的每一件衣服都是重新生成的，然后组成了一件新的套装
         for part in ['upper', 'bottom', 'shoe', 'bag']:
-            if part in to_change: # random choose a image from dataset with same category
+            if part in to_change:  # random choose a image from dataset with same category
                 choice = self.data[index]
                 while (choice[0] == set_id) or (part not in choice[1].keys()):
                     choice = random.choice(self.data)
                 img_path = os.path.join(self.root_dir, str(choice[1][part]['index'])+'.jpg')
                 names.append(torch.LongTensor(self.str_to_idx(choice[1][part]['name'])))
                 labels.append('{}_{}'.format(choice[0], choice[1][part]['index']))
-            elif part in parts.keys():
+            elif part in parts.keys():  # 正样本，原有套装的数据
                 img_path = os.path.join(self.root_dir, str(parts[part]['index'])+'.jpg')
                 names.append(torch.LongTensor(self.str_to_idx(parts[part]['name'])))
                 labels.append('{}_{}'.format(set_id, parts[part]['index']))
@@ -78,6 +79,7 @@ class CategoryDataset(Dataset):
             imgs.append(img)
         input_images = torch.stack(imgs)  # 沿着第0维度拼接图片 [N,C,H,W], N = len(imgs)
         is_compat = (len(to_change) == 0)
+        # offsets后面没用到
         # list(itertools.accumulate([1,2,3,4])) --> [1, 3, 6, 10]
         offsets = list(itertools.accumulate([0] + [len(n) for n in names[:-1]]))  # 除了names的最后一个
         offsets = torch.LongTensor(offsets)
@@ -94,15 +96,15 @@ class CategoryDataset(Dataset):
     def get_fitb_quesiton(self, index):
         """Generate fill in th blank questions.
         Return:
-            images: 5 parts of a outfit
+            images: 4 parts of a outfit
             labels: store if this item is empty
             question_part: which part to be changed
             options: 3 other item with the same category,
             expect original composition get highest score
         """
-        set_id, parts = self.data[index]
-        question_part = random.choice(list(parts))  # 从parts中随机选择一个 ，获得parts中的keys形成的列表
-        question_id = "{}_{}".format(set_id, parts[question_part]['index'])
+        set_id, parts = self.data[index]  # set_id：套装id, parts:套装的组成部分的描述
+        question_part = random.choice(list(parts))  # list(parts)获得parts中的keys形成的列表，然后从中随机选择一个， eg:  question_part：upper
+        question_id = "{}_{}".format(set_id, parts[question_part]['index'])  # eg:  parts[question_part]['index'] : be9627e0c2e43ee96017e288b03eed96(图片的编号)
         imgs = []
         labels = []
         for part in ['upper', 'bottom', 'shoe', 'bag']:
