@@ -20,7 +20,7 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--comment', type=str, default="")
+parser.add_argument('--comment', type=str, default="bn_relu")
 args = parser.parse_args()
 
 print(args)
@@ -111,7 +111,7 @@ def train(model, device, train_loader, val_loader, comment):
             images = images.to(device)
             target = is_compat.float().to(device)
             with torch.no_grad():
-                output, _, _, _ = model._compute_score(images)
+                output, _, _, _ = model._compute_feature_fusion_score(images)
                 output = output.squeeze(dim=1)
                 clf_loss = criterion(output, target)
             clf_losses.update(clf_loss.item(), images.shape[0])
