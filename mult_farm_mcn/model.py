@@ -81,17 +81,47 @@ class CompatModel(nn.Module):
         filter_sizes = [2, 3, 4]
         self.layer_convs = nn.ModuleList()  # 4 x 3 , 一共有4层, 每一层有3个卷积核
         for i in range(4):
-            self.layer_convs.append(nn.ModuleList([nn.Conv2d(1, 1, size, ) for size in filter_sizes]))  #  1:input_channel, 1: output_channel, size : 卷积核大小, stride:2      2x2, 3x3, 4x4
+            self.layer_convs.append(nn.ModuleList([nn.Conv2d(1, 1, size, (1, size*size)) for size in filter_sizes]))  #  1:in_channel, 1: out_channel, size : 卷积核大小, stride:(1,size*2)  2x2, 3x3, 4x4
+        # stride = size * size
+        # rep_len: 256
+        # size = 2, w = 64, h = 3
+        # size = 3, w = 29, h = 2
+        # size = 4, w = 16, h = 1
+        # rep_len: 512
+        # size = 2, w = 128, h = 3
+        # size = 3, w = 57, h = 2
+        # size = 4, w = 32, h = 1
+        # rep_len: 1024
+        # size = 2, w = 256, h = 3
+        # size = 3, w = 114, h = 2
+        # size = 4, w = 64, h = 1
+        # rep_len: 2048
+        # size = 2, w = 512, h = 3
+        # size = 3, w = 228, h = 2
+        # size = 4, w = 128, h = 1
 
-        self.layer_convs_fc1 = nn.Linear(3*255 + 2*254 + 1*253, 512)
-
-        self.layer_convs_fc2 = nn.Linear(3*511 + 2*510 + 1*509 + 512, 1024)
-
-        self.layer_convs_fc3 = nn.Linear(3*1023 + 2*1022 + 1*1021 + 1024, 2048)
-
-        self.layer_convs_fc4 = nn.Linear(3*2047 + 2*2046 + 1*2045 + 2048, 1000)
-
-        self.multi_layer_predictor = nn.Linear(1000, 1)
+        # self.layer_convs_fc1 = nn.Linear(3*64 + 2*29 + 1*16, 256/2)
+        #
+        # self.layer_convs_fc2 = nn.Linear(3*128 + 2*57 + 1*32 + 256/2, 512/2)
+        #
+        # self.layer_convs_fc3 = nn.Linear(3*256 + 2*114 + 1*64 + 512/2, 1024/2)
+        #
+        # self.layer_convs_fc4 = nn.Linear(3*512 + 2*228 + 1*128 + 1024/2, 2048/2)
+        self.layer_convs_fcs = nn.ModuleList()
+        fashion_item_rep_len = [0, 256, 512, 1024, 2048]
+        for i in range(1, len(fashion_item_rep_len)):
+            rep_len = fashion_item_rep_len[i]
+            input_size = 0
+            for size in filter_sizes:
+                stride = size * size
+                wi = (rep_len - size) // stride + 1
+                hi = (4 - size) + 1
+                input_size = input_size + hi * wi
+            input_size = input_size + fashion_item_rep_len[i-1] // 2
+            self.layer_convs_fcs.append(nn.Linear(input_size, rep_len // 2))
+            nn.init.xavier_uniform_(self.layer_convs_fcs[-1].weight)
+            nn.init.constant_(self.layer_convs_fcs[-1].bias, 0)
+        self.multi_layer_predictor = nn.Linear(1024, 1)
 
     def forward(self, images, names):
         """
@@ -353,14 +383,17 @@ class CompatModel(nn.Module):
             self.multi_scale_concats.append(torch.cat(multi_scale_li_feature, 1))  # [16, 3x255 + 2x254 + 1x253], [16, 3*511 + 2*510 + 1*509], [16, 3*1023 + 2*1022 + 1*1021], [16, 3*2047 + 2*2046 + 1*2045]
 
         # 多层级特征融合
-        layer1_to_2 = self.layer_convs_fc1(self.multi_scale_concats[0])  # [16, 512]
+        layer1_to_2 = self.layer_convs_fcs[0](self.multi_scale_concats[0])  # [16, 256/2]
+        layer1_to_2 = F.relu(layer1_to_2)
         layer2_concat_layer1 = torch.cat((layer1_to_2, self.multi_scale_concats[1]), 1)
-        layer2_to_3 = self.layer_convs_fc2(layer2_concat_layer1)    # [16, 1024]
+        layer2_to_3 = self.layer_convs_fcs[1](layer2_concat_layer1)    # [16, 512/2]
+        layer2_to_3 = F.relu(layer2_to_3)
         layer3_concat_layer2 = torch.cat((layer2_to_3, self.multi_scale_concats[2]), 1)
-        layer3_to_4 = self.layer_convs_fc3(layer3_concat_layer2)    # [16, 2048]
+        layer3_to_4 = self.layer_convs_fcs[2](layer3_concat_layer2)    # [16, 1024/2]
+        layer3_to_4 = F.relu(layer3_to_4)
         layer4_concat_layer3 = torch.cat((layer3_to_4, self.multi_scale_concats[3]), 1)
-        layer4_to_out = self.layer_convs_fc4(layer4_concat_layer3)  # [16, 1000]
-
+        layer4_to_out = self.layer_convs_fcs[3](layer4_concat_layer3)  # [16, 2048/2]
+        layer4_to_out = F.relu(layer4_to_out)
         # 预测
         out = self.multi_layer_predictor(layer4_to_out)
         if activate:
