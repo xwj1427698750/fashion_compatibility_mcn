@@ -118,11 +118,17 @@ class CompatModel(nn.Module):
                 hi = (4 - size) + 1
                 input_size = input_size + hi * wi
             input_size = input_size + fashion_item_rep_len[i-1] // 2
-            self.layer_convs_fcs.append(nn.Linear(input_size, rep_len // 2))
-            nn.init.xavier_uniform_(self.layer_convs_fcs[-1].weight)
-            nn.init.constant_(self.layer_convs_fcs[-1].bias, 0)
-        self.multi_layer_predictor = nn.Linear(1024, 1)
+            output_size = rep_len // 2
 
+            linear = nn.Linear(input_size, output_size)
+            nn.init.xavier_uniform_(linear.weight)
+            nn.init.constant_(linear.bias, 0)
+            multi_scale_fc = nn.Sequential(linear, nn.LeakyReLU())
+            self.layer_convs_fcs.append(multi_scale_fc)
+
+        self.multi_layer_predictor = nn.Linear(1024, 1)
+        nn.init.xavier_uniform_(self.multi_layer_predictor.weight)
+        nn.init.constant_(self.multi_layer_predictor.bias, 0)
     def forward(self, images, names):
         """
         Args:
@@ -384,16 +390,16 @@ class CompatModel(nn.Module):
 
         # 多层级特征融合
         layer1_to_2 = self.layer_convs_fcs[0](self.multi_scale_concats[0])  # [16, 256/2]
-        layer1_to_2 = F.relu(layer1_to_2)
+        # layer1_to_2 = F.relu(layer1_to_2)
         layer2_concat_layer1 = torch.cat((layer1_to_2, self.multi_scale_concats[1]), 1)
         layer2_to_3 = self.layer_convs_fcs[1](layer2_concat_layer1)    # [16, 512/2]
-        layer2_to_3 = F.relu(layer2_to_3)
+        # layer2_to_3 = F.relu(layer2_to_3)
         layer3_concat_layer2 = torch.cat((layer2_to_3, self.multi_scale_concats[2]), 1)
         layer3_to_4 = self.layer_convs_fcs[2](layer3_concat_layer2)    # [16, 1024/2]
-        layer3_to_4 = F.relu(layer3_to_4)
+        # layer3_to_4 = F.relu(layer3_to_4)
         layer4_concat_layer3 = torch.cat((layer3_to_4, self.multi_scale_concats[3]), 1)
         layer4_to_out = self.layer_convs_fcs[3](layer4_concat_layer3)  # [16, 2048/2]
-        layer4_to_out = F.relu(layer4_to_out)
+        # layer4_to_out = F.relu(layer4_to_out)
         # 预测
         out = self.multi_layer_predictor(layer4_to_out)
         if activate:

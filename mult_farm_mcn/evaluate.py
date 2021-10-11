@@ -18,7 +18,7 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--model_path', type=str, default="./model_train_bn_relu.pth")
+parser.add_argument('--model_path', type=str, default="./model_train.pth")
 args = parser.parse_args()
 
 print(args)
@@ -46,7 +46,7 @@ test_num = 10
 auc_epochs = []
 fitb_epochs = []
 for epoch in range(test_num):
-    total_loss = 0
+    total_loss = AverageMeter()
     outputs = []
     targets = []
     for batch_num, batch in enumerate(test_loader, 1):
@@ -58,11 +58,11 @@ for epoch in range(test_num):
             output, _, _, _ = model._compute_feature_fusion_score(images)
             output = output.squeeze(dim=1)
             loss = criterion(output, target)
-        total_loss += loss.item()
+        total_loss.update(loss.item(), images.shape[0])
         outputs.append(output)
         targets.append(target)
     print()
-    print("test:{} Test Loss: {:.4f}".format(epoch+1, total_loss / batch_num))
+    print("test:{} Test Loss: {:.4f}".format(epoch+1, total_loss.avg))
     outputs = torch.cat(outputs).cpu().data.numpy()
     targets = torch.cat(targets).cpu().data.numpy()
     auc = metrics.roc_auc_score(targets, outputs)
