@@ -79,6 +79,7 @@ class CompatModel(nn.Module):
 
         # 多尺度融合层每一层的卷积核
         filter_sizes = [2, 3, 4]
+        rep_weight = 8  # 套装的个数，正常是4，如果将套装复制然后拼接了一次，就可以得到8了
         self.layer_convs = nn.ModuleList()  # 4 x 3 , 一共有4层, 每一层有3个卷积核
         for i in range(4):
             multi_convs = nn.ModuleList()
@@ -87,7 +88,7 @@ class CompatModel(nn.Module):
                     nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(1, size*size)),
                     nn.BatchNorm2d(1),
                     nn.ReLU(),
-                    nn.MaxPool2d(kernel_size=(4 - size + 1)),
+                    nn.MaxPool2d(kernel_size=(rep_weight - size + 1, rep_weight // 2 - size + 1)),
                     nn.Flatten(),
                 )
                 multi_convs.append(conv_net)
@@ -407,7 +408,8 @@ class CompatModel(nn.Module):
         for i, rep_li in enumerate(rep_list):
             rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, 1, item_num, -1)
             # rep_l1 (16,1,4,256), rep_l2 (16,1,4,512), rep_l3 (16,1,4,1024), rep_l4 (16,1,4,2048)
-            multi_scale_li_feature = [layer_i_convs_scale(rep_li) for layer_i_convs_scale in self.layer_convs[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
+            rep_li_double = torch.cat((rep_li, rep_li), 2)  # (16,1,8,256), rep_l2 (16,1,8,512), rep_l3 (16,1,8,1024), rep_l4 (16,1,8,2048)
+            multi_scale_li_feature = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_convs[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
             # 2x2 ---> [16, 3 x 255],  [16, 3 x 511], [16, 3 x 1023], [16, 3 x 2047]
             # 3x3 ---> [16, 2 x 254],  [16, 2 x 510], [16, 2 x 1022], [16, 2 x 2046]
             # 4x4 ---> [16, 1 x 253],  [16, 1 x 509], [16, 1 x 1021], [16, 1 x 2045]
