@@ -20,7 +20,7 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--comment', type=str, default="maxpool_double_weight_two_conv_two_fuse")
+parser.add_argument('--comment', type=str, default="maxpool_double_weight_two_conv_two_fuse_double_rep")
 args = parser.parse_args()
 
 print(args)
@@ -92,7 +92,7 @@ def train(model, device, train_loader, val_loader, comment):
             model.zero_grad()
             total_loss.backward()
             optimizer.step()
-            if batch_num % 10 == 0:
+            if batch_num % 50 == 0:
                 logging.info(
                     "[{}/{}] #{} clf_loss: {:.4f}, vse_loss: {:.4f}, features_loss: {:.4f}, tmasks_loss: {:.4f}, total_loss:{:.4f}".format(
                         epoch, epochs, batch_num, clf_losses.val, vse_losses.val, features_loss, tmasks_loss, total_losses.val

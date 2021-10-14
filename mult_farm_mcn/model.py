@@ -158,7 +158,7 @@ class CompatModel(nn.Module):
                 nn.Conv3d(in_channels=1, out_channels=1, kernel_size=(filter_size, 2, 2), stride=(1, 1, 2)),  # 表示的是三维上的步长是1，在行方向上步长是1，在列方向上步长是2。
                 nn.BatchNorm3d(1),
                 nn.ReLU(),
-                nn.MaxPool3d(kernel_size=(4 - filter_size + 1, 3, 3)),  # 输出维度是16, 1, 1, 1, 42
+                nn.MaxPool3d(kernel_size=(8 - filter_size + 1, 3, 3)),  # 输出维度是16, 1, 1, 1, 42
             )
             self.multi_3d_convs.append(conv_3d_net)
 
@@ -443,7 +443,8 @@ class CompatModel(nn.Module):
 
         # 多层级特征融合模块2
         multi_pool_concats = torch.cat(multi_pool_reps, 1)  # (16, 4, 4, 256)
-        multi_pool_concats = multi_pool_concats.reshape(batch_size, 1, len(rep_list), item_num, -1)  # (16, 1, 4, 4, 256)
+        multi_pool_concats = torch.cat((multi_pool_concats, multi_pool_concats), 1)
+        multi_pool_concats = multi_pool_concats.reshape(batch_size, 1, len(rep_list)*2, item_num, -1)  # (16, 1, 8, 4, 256)
         multi_3d_conv_rep = []
         for i in range(len(self.filter_sizes)):
             multi_3d_conv_rep.append(self.multi_3d_convs[i](multi_pool_concats).reshape(batch_size, -1))
