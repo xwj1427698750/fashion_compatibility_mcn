@@ -78,12 +78,12 @@ class CompatModel(nn.Module):
         self.ada_avgpool2d = nn.AdaptiveAvgPool2d((1, 1))
 
         # 多尺度融合层每一层的卷积核
-        filter_sizes = [2, 3, 4]
+        self.filter_sizes = [2, 3, 4]
         rep_weight = 8  # 套装的个数，正常是4，如果将套装复制然后拼接了一次，就可以得到8了
         self.layer_convs = nn.ModuleList()  # 4 x 3 , 一共有4层, 每一层有3个卷积核
         for i in range(4):
             multi_convs = nn.ModuleList()
-            for size in filter_sizes:
+            for size in self.filter_sizes:
                 conv_net = nn.Sequential(
                     nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(1, size*size)),
                     nn.BatchNorm2d(1),
@@ -97,6 +97,8 @@ class CompatModel(nn.Module):
                 )
                 multi_convs.append(conv_net)
             self.layer_convs.append(multi_convs)
+
+        # 多层级融合模块1————全连接层网络
 
         # 采用池化操作后
         # self.layer_convs_fc1 = nn.Linear(30 + 6 + 3      + 0, 16)
@@ -113,7 +115,7 @@ class CompatModel(nn.Module):
         for i in range(1, len(fashion_item_rep_len)):
             rep_len = fashion_item_rep_len[i]
             input_size = 0
-            for size in filter_sizes:
+            for size in self.filter_sizes:
                 stride = size * size
                 #  conv1
                 hi = (8 - size) + 1                 # kernel = (size, size), stride = (1, size * size)
@@ -137,9 +139,30 @@ class CompatModel(nn.Module):
             multi_scale_fc = nn.Sequential(linear, nn.ReLU())
             self.layer_convs_fcs.append(multi_scale_fc)
 
-        self.multi_layer_predictor = nn.Linear(128, 1)
+        self.multi_layer_predictor = nn.Linear(128 + 42*3, 1)  # 128是多层级融合模块1输出的特征维度， 42*3 是多层级特征模块2输出的特征维度
         nn.init.xavier_uniform_(self.multi_layer_predictor.weight)
         nn.init.constant_(self.multi_layer_predictor.bias, 0)
+
+        # 多层级融合模块2————采用3D卷积来融合多层的特征
+
+        # 通过池化的方式将每一层的特征统一尺寸
+        self.pool_layers = nn.ModuleList()
+        pool_strides = [1, 2, 4, 8]  # 512 / 2, 1024 / 4, 2048 / 8, 每一层经过池化后，得出的数据特征尺寸都是 4x256, 为了代码一致性加了1的情况
+        for stride in pool_strides:
+            self.pool_layers.append(nn.AvgPool2d(kernel_size=(1, stride), stride=(1, stride)))
+
+        # 构建需要的3D卷积网络
+        self.multi_3d_convs = nn.ModuleList()
+        for filter_size in self.filter_sizes:  # 2, 3, 4
+            conv_3d_net = nn.Sequential(
+                nn.Conv3d(in_channels=1, out_channels=1, kernel_size=(filter_size, 2, 2), stride=(1, 1, 2)),  # 表示的是三维上的步长是1，在行方向上步长是1，在列方向上步长是2。
+                nn.BatchNorm3d(1),
+                nn.ReLU(),
+                nn.MaxPool3d(kernel_size=(4 - filter_size + 1, 3, 3)),  # 输出维度是16, 1, 1, 1, 42
+            )
+            self.multi_3d_convs.append(conv_3d_net)
+
+
     def forward(self, images, names):
         """
         Args:
@@ -389,8 +412,10 @@ class CompatModel(nn.Module):
             rep_list.append(rep_l3)
         if "4" in self.conv_feats:
             rep_list.append(rep_l4)
-        self.multi_scale_concats = []
+        multi_scale_concats = []
+        multi_pool_reps = []
         for i, rep_li in enumerate(rep_list):
+            # 多层级融合模块一
             rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, 1, item_num, -1)
             # rep_l1 (16,1,4,256), rep_l2 (16,1,4,512), rep_l3 (16,1,4,1024), rep_l4 (16,1,4,2048)
             rep_li_double = torch.cat((rep_li, rep_li), 2)  # (16,1,8,256), rep_l2 (16,1,8,512), rep_l3 (16,1,8,1024), rep_l4 (16,1,8,2048)
@@ -400,22 +425,34 @@ class CompatModel(nn.Module):
             # 3x3 ---> [16, 2 x 254],  [16, 2 x 510], [16, 2 x 1022], [16, 2 x 2046]
             # 4x4 ---> [16, 1 x 253],  [16, 1 x 509], [16, 1 x 1021], [16, 1 x 2045]
             cat_feature = torch.cat(multi_scale_li_feature, 1)
-            self.multi_scale_concats.append(cat_feature)  # [16, 3x255 + 2x254 + 1x253], [16, 3*511 + 2*510 + 1*509], [16, 3*1023 + 2*1022 + 1*1021], [16, 3*2047 + 2*2046 + 1*2045]
+            multi_scale_concats.append(cat_feature)  # [16, 3x255 + 2x254 + 1x253], [16, 3*511 + 2*510 + 1*509], [16, 3*1023 + 2*1022 + 1*1021], [16, 3*2047 + 2*2046 + 1*2045]
 
-        # 多层级特征融合
-        layer1_to_2 = self.layer_convs_fcs[0](self.multi_scale_concats[0])  # [16, 256/2]
-        # layer1_to_2 = F.relu(layer1_to_2)
-        layer2_concat_layer1 = torch.cat((layer1_to_2, self.multi_scale_concats[1]), 1)
+            # 多层级融合模块2
+            # 池化层统一尺寸， 每一个都变成(16, 1, 4, 256)
+            rep_li_pool = self.pool_layers[i](rep_li)
+            multi_pool_reps.append(rep_li_pool)
+
+        # 多层级特征融合模块1
+        layer1_to_2 = self.layer_convs_fcs[0](multi_scale_concats[0])  # [16, 256/2]
+        layer2_concat_layer1 = torch.cat((layer1_to_2, multi_scale_concats[1]), 1)
         layer2_to_3 = self.layer_convs_fcs[1](layer2_concat_layer1)    # [16, 512/2]
-        # layer2_to_3 = F.relu(layer2_to_3)
-        layer3_concat_layer2 = torch.cat((layer2_to_3, self.multi_scale_concats[2]), 1)
+        layer3_concat_layer2 = torch.cat((layer2_to_3, multi_scale_concats[2]), 1)
         layer3_to_4 = self.layer_convs_fcs[2](layer3_concat_layer2)    # [16, 1024/2]
-        # layer3_to_4 = F.relu(layer3_to_4)
-        layer4_concat_layer3 = torch.cat((layer3_to_4, self.multi_scale_concats[3]), 1)
+        layer4_concat_layer3 = torch.cat((layer3_to_4, multi_scale_concats[3]), 1)
         layer4_to_out = self.layer_convs_fcs[3](layer4_concat_layer3)  # [16, 2048/2]
-        # layer4_to_out = F.relu(layer4_to_out)
+
+        # 多层级特征融合模块2
+        multi_pool_concats = torch.cat(multi_pool_reps, 1)  # (16, 4, 4, 256)
+        multi_pool_concats = multi_pool_concats.reshape(batch_size, 1, len(rep_list), item_num, -1)  # (16, 1, 4, 4, 256)
+        multi_3d_conv_rep = []
+        for i in range(len(self.filter_sizes)):
+            multi_3d_conv_rep.append(self.multi_3d_convs[i](multi_pool_concats).reshape(batch_size, -1))
+        multi_3d_conv_rep = torch.cat(multi_3d_conv_rep, 1)
+
         # 预测
-        out = self.multi_layer_predictor(layer4_to_out)
+        fuse_feature = torch.cat((layer4_to_out, multi_3d_conv_rep), 1)
+
+        out = self.multi_layer_predictor(fuse_feature)
         if activate:
             out = self.sigmoid(out)
         if self.need_rep:
