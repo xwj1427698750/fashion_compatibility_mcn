@@ -85,61 +85,74 @@ class CompatModel(nn.Module):
             multi_convs = nn.ModuleList()
             for size in self.filter_sizes:
                 conv_net = nn.Sequential(
-                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(1, size*size)),
+                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(1, size * size)),
                     nn.BatchNorm2d(1),
                     nn.ReLU(),
-                    nn.MaxPool2d(kernel_size=2, stride=(1, 2)),
-                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=2, stride=2),
-                    nn.BatchNorm2d(1),
-                    nn.ReLU(),
-                    nn.MaxPool2d(kernel_size=2, stride=1),
+                    nn.MaxPool2d(kernel_size=(rep_weight - size + 1, rep_weight // 2 - size + 1)),
                     nn.Flatten(),
                 )
                 multi_convs.append(conv_net)
             self.layer_convs.append(multi_convs)
+        # stride = size * size, 以下尺寸均为单个batch的
+        # rep_len: 256
+        # size = 2, 卷积后的张量尺寸 h1 = 3, w1 = 64, 池化后的张量尺寸为 h2 = 1, w2 = 21
+        # size = 3, 卷积后的张量尺寸 h1 = 2, w1 = 29, 池化后的张量尺寸为 h2 = 1, w2 = 14
+        # size = 4, 卷积后的张量尺寸 h1 = 1, w1 = 16, 池化后的张量尺寸为 h2 = 1, w2 = 16
+        # rep_len: 512
+        # size = 2, 卷积后的张量尺寸 h1 = 3, w1 = 128, 池化后的张量尺寸为 h2 = 1, w2 = 42
+        # size = 3, 卷积后的张量尺寸 h1 = 2, w1 = 57, 池化后的张量尺寸为 h2 = 1, w2 = 28
+        # size = 4, 卷积后的张量尺寸 h1 = 1, w1 = 32, 池化后的张量尺寸为 h2 = 1, w2 = 32
+        # rep_len: 1024
+        # size = 2, 卷积后的张量尺寸 h1 = 3, w1 = 256, 池化后的张量尺寸为 h2 = 1, w2 = 85
+        # size = 3, 卷积后的张量尺寸 h1 = 2, w1 = 114, 池化后的张量尺寸为 h2 = 1, w2 = 57
+        # size = 4, 卷积后的张量尺寸 h1 = 1, w1 = 64, 池化后的张量尺寸为 h2 = 1, w2 = 64
+        # rep_len: 2048
+        # size = 2, 卷积后的张量尺寸 h1 = 3, w1 = 512, 池化后的张量尺寸为 h2 = 1, w2 = 170
+        # size = 3, 卷积后的张量尺寸 h1 = 2, w1 = 228, 池化后的张量尺寸为 h2 = 1, w2 = 114
+        # size = 4, 卷积后的张量尺寸 h1 = 1, w1 = 128, 池化后的张量尺寸为 h2 = 1, w2 = 128
 
-        # 多层级融合模块1————全连接层网络
+        # 未采用池化操作
+        # self.layer_convs_fc1 = nn.Linear(3*64 + 2*29 + 1*16, 256/2)
+        #
+        # self.layer_convs_fc2 = nn.Linear(3*128 + 2*57 + 1*32 + 256/2, 512/2)
+        #
+        # self.layer_convs_fc3 = nn.Linear(3*256 + 2*114 + 1*64 + 512/2, 1024/2)
+        #
+        # self.layer_convs_fc4 = nn.Linear(3*512 + 2*228 + 1*128 + 1024/2, 2048/2)
 
         # 采用池化操作后
-        # self.layer_convs_fc1 = nn.Linear(30 + 6 + 3      + 0, 16)
+        # self.layer_convs_fc1 = nn.Linear(21 + 14 + 16      + 0, 32)
         #
-        # self.layer_convs_fc2 = nn.Linear(62 + 13 + 7     + 16, 32)
+        # self.layer_convs_fc2 = nn.Linear(42 + 28 + 32      + 32, 64)
         #
-        # self.layer_convs_fc3 = nn.Linear(126 + 27 + 15   + 32, 64)
+        # self.layer_convs_fc3 = nn.Linear(85 + 57 + 64      + 64, 128)
         #
-        # self.layer_convs_fc4 = nn.Linear(254 + 56 + 31   + 64, 128)
+        # self.layer_convs_fc4 = nn.Linear(170 + 114 + 128   + 128, 256)
 
         self.layer_convs_fcs = nn.ModuleList()
         fashion_item_rep_len = [0, 256, 512, 1024, 2048]
-        fcs_output_size = [0, 16, 32, 64, 128]
+        fcs_output_size = [0, 32, 64, 128, 256]
         for i in range(1, len(fashion_item_rep_len)):
             rep_len = fashion_item_rep_len[i]
             input_size = 0
             for size in self.filter_sizes:
                 stride = size * size
-                #  conv1
-                hi = (8 - size) + 1                 # kernel = (size, size), stride = (1, size * size)
                 wi = (rep_len - size) // stride + 1
-                #  pool1
-                hi = (hi - 2) // 1 + 1               # kernel = (2, 2), stride = (1, 2)
-                wi = (wi - 2) // 2 + 1
-
-                #  conv2
-                hi = (hi - 2) // 2 + 1               # kernel = (2, 2), stride = (2, 2)
-                wi = (wi - 2) // 2 + 1
-                # pool2
-                hi = (hi - 2) // 1 + 1               # kernel = (2, 2), stride = (1, 1)
-                wi = (wi - 2) // 1 + 1
+                hi = (4 - size) + 1
+                # 卷积之后的池化操作, 对张量产生的影响
+                wi = wi // hi
+                hi = 1
                 input_size = input_size + hi * wi
-            input_size = input_size + fcs_output_size[i-1]
+            input_size = input_size + fcs_output_size[i - 1]
             output_size = fcs_output_size[i]
+
             linear = nn.Linear(input_size, output_size)
             nn.init.xavier_uniform_(linear.weight)
             nn.init.constant_(linear.bias, 0)
-            multi_scale_fc = nn.Sequential(linear, nn.ReLU())
+            multi_scale_fc = nn.Sequential(linear, nn.LeakyReLU())
             self.layer_convs_fcs.append(multi_scale_fc)
 
-        self.multi_layer_predictor = nn.Linear(128 + 42*3, 1)  # 128是多层级融合模块1输出的特征维度， 42*3 是多层级特征模块2输出的特征维度
+        self.multi_layer_predictor = nn.Linear(256 + 42*3, 1)
         nn.init.xavier_uniform_(self.multi_layer_predictor.weight)
         nn.init.constant_(self.multi_layer_predictor.bias, 0)
 
