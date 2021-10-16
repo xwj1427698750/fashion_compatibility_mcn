@@ -165,7 +165,7 @@ class CompatModel(nn.Module):
             multi_scale_fc = nn.Sequential(linear, nn.ReLU())
             self.layer_convs_fcs.append(multi_scale_fc)
 
-        self.multi_layer_predictor = nn.Linear(256 + 42*3, 1)
+        self.multi_layer_predictor = nn.Linear(256 + 64, 1)
         nn.init.xavier_uniform_(self.multi_layer_predictor.weight)
         nn.init.constant_(self.multi_layer_predictor.bias, 0)
 
@@ -179,6 +179,7 @@ class CompatModel(nn.Module):
 
         # 构建需要的3D卷积网络
         self.multi_3d_convs = nn.ModuleList()
+        self.multi_3d_convs2 = nn.ModuleList()
         for filter_size in self.filter_sizes:  # 2, 3, 4
             conv_3d_net = nn.Sequential(
                 nn.Conv3d(in_channels=1, out_channels=1, kernel_size=(filter_size, 2, 2), stride=(1, 1, 2)),  # 表示的是三维上的步长是1，在行方向上步长是1，在列方向上步长是2。
@@ -187,7 +188,20 @@ class CompatModel(nn.Module):
                 nn.AvgPool3d(kernel_size=(8 - filter_size + 1, 3, 3)),  # 输出维度是16, 1, 1, 1, 42
             )
             self.multi_3d_convs.append(conv_3d_net)
+            conv_3d_net2 = nn.Sequential(
+                nn.Conv3d(in_channels=1, out_channels=1, kernel_size=(filter_size, 2, 2), stride=(1, 1, 2)),
+                # 表示的是三维上的步长是1，在行方向上步长是1，在列方向上步长是2。
+                nn.BatchNorm3d(1),
+                nn.ReLU(),
+                nn.AvgPool3d(kernel_size=(8 - filter_size + 1, 3, 3)),  # 输出维度是16, 1, 1, 1, 42
+            )
+            self.multi_3d_convs2.append(conv_3d_net2)
 
+        self.conv_3d_fuse = nn.Sequential(
+            nn.Linear(42 * 3 * 2, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+        )
 
     def forward(self, images, names):
         """
@@ -439,7 +453,6 @@ class CompatModel(nn.Module):
         if "4" in self.conv_feats:
             rep_list.append(rep_l4)
         multi_scale_concats = []
-        multi_scale_concats2 = []
         multi_pool_reps = []
         for i, rep_li in enumerate(rep_list):
             # 多层级融合模块一
@@ -482,8 +495,15 @@ class CompatModel(nn.Module):
             multi_3d_conv_rep.append(self.multi_3d_convs[i](multi_pool_concats).reshape(batch_size, -1))
         multi_3d_conv_rep = torch.cat(multi_3d_conv_rep, 1)
 
+        multi_3d_conv_rep2 = []
+        for i in range(len(self.filter_sizes)):
+            multi_3d_conv_rep2.append(self.multi_3d_convs2[i](multi_pool_concats).reshape(batch_size, -1))
+        multi_3d_conv_rep2 = torch.cat(multi_3d_conv_rep2, 1)
+
+        multi_3d_conv_fuse = torch.cat((multi_3d_conv_rep, multi_3d_conv_rep2), 1)
+        multi_3d_conv_fuse_out = self.conv_3d_fuse(multi_3d_conv_fuse)
         # 预测
-        fuse_feature = torch.cat((layer4_to_out, multi_3d_conv_rep), 1)
+        fuse_feature = torch.cat((layer4_to_out, multi_3d_conv_fuse_out), 1)
 
         out = self.multi_layer_predictor(fuse_feature)
         if activate:
