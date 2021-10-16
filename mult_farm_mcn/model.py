@@ -89,8 +89,8 @@ class CompatModel(nn.Module):
                 conv_net = nn.Sequential(
                     nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(1, size * size)),
                     nn.BatchNorm2d(1),
-                    nn.ReLU(),
-                    nn.MaxPool2d(kernel_size=(rep_weight - size + 1, rep_weight // 2 - size + 1)),
+                    nn.LeakyReLU(),
+                    nn.AvgPool2d(kernel_size=(rep_weight - size + 1, rep_weight // 2 - size + 1)),
                     nn.Flatten(),
                 )
                 multi_convs.append(conv_net)
@@ -99,7 +99,7 @@ class CompatModel(nn.Module):
                     nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(1, size * size)),
                     nn.BatchNorm2d(1),
                     nn.ReLU(),
-                    nn.MaxPool2d(kernel_size=(rep_weight - size + 1, rep_weight // 2 - size + 1)),
+                    nn.AvgPool2d(kernel_size=(rep_weight - size + 1, rep_weight // 2 - size + 1)),
                     nn.Flatten(),
                 )
                 multi_convs2.append(conv_net2)
@@ -183,8 +183,8 @@ class CompatModel(nn.Module):
             conv_3d_net = nn.Sequential(
                 nn.Conv3d(in_channels=1, out_channels=1, kernel_size=(filter_size, 2, 2), stride=(1, 1, 2)),  # 表示的是三维上的步长是1，在行方向上步长是1，在列方向上步长是2。
                 nn.BatchNorm3d(1),
-                nn.ReLU(),
-                nn.MaxPool3d(kernel_size=(8 - filter_size + 1, 3, 3)),  # 输出维度是16, 1, 1, 1, 42
+                nn.LeakyReLU(),
+                nn.AvgPool3d(kernel_size=(8 - filter_size + 1, 3, 3)),  # 输出维度是16, 1, 1, 1, 42
             )
             self.multi_3d_convs.append(conv_3d_net)
 
