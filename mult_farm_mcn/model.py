@@ -216,7 +216,7 @@ class CompatModel(nn.Module):
             features_loss: regularize the feature vector to be normal
         """
         if self.need_rep:
-            out, features, tmasks, rep = self._compute_feature_fusion_score(images)
+            out, features, tmasks, rep, reps = self._compute_feature_fusion_score(images)
         else:
             out, features, tmasks = self._compute_feature_fusion_score(images)
 
@@ -380,7 +380,7 @@ class CompatModel(nn.Module):
         images = torch.reshape(images, (-1, 3, img_size, img_size))  # (batch_size*item_num->16*4, 3, 224, 224)
         if self.need_rep:
             features, *rep = self.cnn(images)
-            rep_l1, rep_l2, rep_l3, rep_l4, rep = rep  # 左侧的rep是倒数第二层的特征
+            rep_l1, rep_l2, rep_l3, rep_l4, rep_last_2th = rep  # 左侧的rep是倒数第二层的特征
             # [64,256,56,56],[64,512,28,28],[64,1024,14,14],[64, 2048, 7, 7]
         else:
             features = self.cnn(images)  # (batch_size * item_num -> 16*4, 1000)
@@ -509,7 +509,7 @@ class CompatModel(nn.Module):
         if activate:
             out = self.sigmoid(out)
         if self.need_rep:
-            return out, features, _, rep
+            return out, features, _, rep_last_2th, rep
         else:
             return out, features, _
 
