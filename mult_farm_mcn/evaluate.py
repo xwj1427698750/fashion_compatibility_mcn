@@ -55,7 +55,7 @@ for epoch in range(test_num):
         images = images.to(device)
         target = is_compat.float().to(device)
         with torch.no_grad():
-            output, _, _, _ = model._compute_feature_fusion_score(images)
+            output, _, _, _, _ = model._compute_feature_fusion_score(images)
             output = output.squeeze(dim=1)
             loss = criterion(output, target)
         total_loss.update(loss.item(), images.shape[0])
