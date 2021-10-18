@@ -83,7 +83,7 @@ for epoch in range(test_num):
             new_outfit[question_part] = option
             images.append(new_outfit)
         images = torch.stack(images).to(device)
-        output, _, _, _ = model._compute_feature_fusion_score(images)
+        output, _, _, _, _ = model._compute_feature_fusion_score(images)
 
         if output.argmax().item() == 0:
             is_correct.append(True)
