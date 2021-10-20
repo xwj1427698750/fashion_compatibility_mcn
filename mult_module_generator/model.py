@@ -162,7 +162,7 @@ class CompatModel(nn.Module):
             linear = nn.Linear(input_size, output_size)
             nn.init.xavier_uniform_(linear.weight)
             nn.init.constant_(linear.bias, 0)
-            multi_scale_fc = nn.Sequential(linear, nn.BatchNorm1d(output_size), nn.ReLU())
+            multi_scale_fc = nn.Sequential(linear, nn.ReLU())
             self.layer_convs_fcs.append(multi_scale_fc)
 
         self.multi_layer_predictor = nn.Linear(256 + 64, 1)
