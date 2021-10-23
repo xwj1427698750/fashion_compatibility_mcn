@@ -45,23 +45,56 @@ class BestSaver(object):
         # Get current executing script name
         import __main__, os
         exe_fname=os.path.basename(__main__.__file__)
-        save_path = "model_{}".format(exe_fname.split(".")[0])
-        
+
+        auc_save_path = "model_{}".format(exe_fname.split(".")[0])
         if comment is not None and str(comment):
-            save_path = save_path + "_" + str(comment)
+            auc_save_path = auc_save_path + "_" + str(comment)
 
-        save_path = save_path + ".pth"
+        auc_save_path = auc_save_path + ".pth"
+        self.auc_save_path = auc_save_path
+        self.best_auc = float('-inf')
+        self.best_auc_epoch = 0  # 取得最佳成绩的轮次
 
-        self.save_path = save_path
-        self.best = float('-inf')
-        self.best_epoch = 0  # 取得最佳成绩的轮次
+        # ------------------------ 根据ACC的任务来保存优秀的模型判断 ---------------------------
+        acc_save_path = "model_ACC_{}".format(exe_fname.split(".")[0])
+        if comment is not None and str(comment):
+            acc_save_path = acc_save_path + "_ACC_" + str(comment)
 
-    def save(self, metric, data, epoch):
-        if metric > self.best:
-            self.best = metric
-            self.best_epoch = epoch
-            torch.save(data, self.save_path)
-            logging.info("Saved best model to {}".format(self.save_path))
+        acc_save_path = acc_save_path + ".pth"
+        self.acc_save_path = acc_save_path
+        self.best_acc = float('-inf')
+        self.best_acc_epoch = 0  # 取得最佳成绩的轮次
+
+        # ------------------------ 根据ACC和AUC的任务来保存优秀的模型判断，在ACC相同的情况下，保存AUC大的模型 ---------------------------
+        acc_auc_save_path = "model_ACC(AUC)_{}".format(exe_fname.split(".")[0])
+        if comment is not None and str(comment):
+            acc_auc_save_path = acc_auc_save_path + "_ACC(AUC)_" + str(comment)
+
+        acc_auc_save_path = acc_auc_save_path + ".pth"
+        self.acc_auc_save_path = acc_auc_save_path
+        self.best_acc_auc = float('-inf')
+        self.best_acc_auc_epoch = 0  # 取得最佳成绩的轮次
+
+    def save(self, auc, acc, data, epoch):
+        if auc > self.best_auc:
+            self.best_auc = auc
+            self.best_auc_epoch = epoch
+            torch.save(data, self.auc_save_path)
+            logging.info("Saved best model to {}".format(self.auc_save_path))
+
+        # ------------------------ 根据ACC的结果来保存优秀的模型判断 ---------------------------
+        if acc >= self.best_acc:
+            self.best_acc = acc
+            self.best_acc_epoch = epoch
+            torch.save(data, self.acc_save_path)
+            logging.info("Saved ACC best model to {}".format(self.acc_save_path))
+            # ------------------------ 根据ACC(AUC)的结果来保存优秀的模型判断 ---------------------------
+            if auc >= self.best_acc_auc:
+                self.best_acc_auc = auc
+                self.best_acc_auc_epoch = epoch
+                torch.save(data, self.acc_auc_save_path)
+                logging.info("Saved ACC(AUC) best model to {}".format(self.acc_auc_save_path))
+
 
 
 def config_logging(comment=None):
