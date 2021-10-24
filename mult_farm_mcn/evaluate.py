@@ -18,7 +18,7 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--model_path', type=str, default="./model_train_avgpool_double_weight_(double_3d_conv:out_concat_one_fcs)_(two_fuse_module)_(double_rep).pth")
+parser.add_argument('--model_path', type=str, default="./model_train_avgpool_double_weight_(double_3d_conv:out_concat_one_fcs)_(two_fuse_module)_(double_rep)_res_fc.pth")
 args = parser.parse_args()
 
 print(args)

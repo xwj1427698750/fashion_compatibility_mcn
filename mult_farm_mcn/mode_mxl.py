@@ -216,35 +216,86 @@ class farm_recommender(nn.Block):
 class farm_predictor(nn.Block):
     def __init__(self, **kwargs):
         super(farm_predictor, self).__init__(**kwargs)
+        self.layer1 = nn.Dense(30, activation='relu')
+        self.layer2 = nn.Dense(1, activation='sigmoid')
 
-        # feature_x1, feature_x2, feature_x3,feature_yp, feature_yn, feature_yg shape [使用的特征层数, batch_size, embeddinf_size]
+        # feature_x1, feature_x2, feature_x3,feature_yp, feature_yn, feature_yg shape [使用的特征层数, batch_size, embedding_size]
 
-    def forward(self, enc_x, feature_x1, feature_x2, feature_x3, enc_desc, enc_yp, enc_yn, feature_yp, feature_yn):
-        outfit_p = [feature_x1, feature_x2, feature_x3, ]
-        score_yp = nd.sum(enc_yp * enc_x, axis=1) + nd.sum(enc_yp * enc_desc, axis=1)
-        for i in range(len(feature_yp)):
-            score_yp = score_yp + nd.sum(feature_yp[i] * feature_yg[i], axis=1)
-            score_yp = score_yp + nd.sum(feature_yp[i] * feature_x1[i], axis=1)
-            score_yp = score_yp + nd.sum(feature_yp[i] * feature_x2[i], axis=1)
-            score_yp = score_yp + nd.sum(feature_yp[i] * feature_x3[i], axis=1)
+    def forward(self, feature_x1, feature_x2, feature_x3, feature_yp, feature_yn):
+        outfit_p = [feature_x1, feature_x2, feature_x3, feature_yp]  # (4,3,batch_size,embedding_size)
+        outfit_n = [feature_x1, feature_x2, feature_x3, feature_yn]  # (4,3,batch_size,embedding_size)
+        # Comparison matrix
+        score_list_p = []
+        score_list_n = []
+        # 一共有10轮的循环 (i,j)->(0,0),(0,1),..,(1,1),(1,2),...(2,2),....,(3,3)
+        for idx in range(len(feature_x1)):
+            for mi, (i, j) in enumerate(itertools.combinations_with_replacement([0, 1, 2, 3], 2)):
+                score_ij_p = outfit_p[i][idx] * outfit_p[j][idx]  # batch_size ,embedding_size (80,100)
+                #                 print(f"score_ij_p1.shape{score_ij_p.shape}")
+                score_ij_p = score_ij_p.sum(axis=-1, keepdims=True)  # batch_size ,1
+                score_list_p.append(score_ij_p)
 
-        score_yn = nd.sum(enc_yn * enc_x, axis=1) + nd.sum(enc_yn * enc_desc, axis=1)
-        for i in range(len(feature_yn)):
-            score_yn = score_yn + nd.sum(feature_yn[i] * feature_yg[i], axis=1)
-            score_yn = score_yn + nd.sum(feature_yn[i] * feature_x1[i], axis=1)
-            score_yn = score_yn + nd.sum(feature_yn[i] * feature_x2[i], axis=1)
-            score_yn = score_yn + nd.sum(feature_yn[i] * feature_x3[i], axis=1)
-        difference_pn = score_yp - score_yn
-        return difference_pn
+                score_ij_n = outfit_n[i][idx] * outfit_n[j][idx]  # batch_size ,embedding_size
+                score_ij_n = score_ij_n.sum(axis=-1, keepdims=True)  # batch_size ,1
+                score_list_n.append(score_ij_n)
+        #         print(score_list_p)
+        scores_p = nd.concat(*score_list_p)  # batch_size,30
+        out_p = self.layer1(scores_p)
+        out_p = self.layer2(out_p)  # batch_size,1
 
+        scores_n = nd.concat(*score_list_n)  # batch_size,30
+        out_n = self.layer1(scores_n)
+        out_n = self.layer2(out_n)
+
+        return out_p, out_n  # batch_size,1
+
+
+class farm_layer_fusion(nn.Block):
+    def __init__(self, **kwargs):
+        super(farm_layer_fusion, self).__init__(**kwargs)
+        self.low_to_medium = nn.Dense(100, activation='relu')
+        self.medium_to_high = nn.Dense(100, activation='relu')
+        self.layer1 = nn.Dense(30, activation='relu')
+        self.layer2 = nn.Dense(1, activation='sigmoid')
+
+        # feature_x1, feature_x2, feature_x3,feature_yp, feature_yn, feature_yg shape [使用的特征层数, batch_size, embedding_size]
+
+    def forward(self, feature_x1, feature_x2, feature_x3, feature_y):
+        low_feature = nd.concat(feature_x1[0], feature_x2[0], feature_x3[0], feature_y[0], dim=1)
+        medium_orig = nd.concat(feature_x1[1], feature_x2[1], feature_x3[1], feature_y[1], dim=1)
+        high_orig = nd.concat(feature_x1[2], feature_x2[2], feature_x3[2], feature_y[2], dim=1)
+
+        medium_from_low = self.low_to_medium(low_feature)
+        medium_new = nd.concat(medium_from_low, medium_orig, dim=1)
+        high_from_medium = self.medium_to_high(medium_new)
+        high_new = nd.concat(high_from_medium, high_orig, dim=1)
+
+        out = self.layer1(high_new)
+        out = self.layer2(out)  # batch_size,1
+
+        return out  # batch_size,1
 
 class feature_fusion(nn.Block):
     def __init__(self, **kwargs):
         super(feature_fusion, self).__init__(**kwargs)
-        self.feature_embedding = nn.Dense(100, activation='sigmoid')
-    def forward(self,enc_x_1,enc_x_2 ,enc_x_3):
-        feature = nd.concat(enc_x_1,enc_x_2,enc_x_3, dim=1)
-        return self.feature_embedding(feature) # 保持维度统一，都是100维
+        self.low_to_medium = nn.Dense(100, activation='relu')
+        self.medium_to_high = nn.Dense(100, activation='relu')
+        self.layer1 = nn.Dense(100, activation='sigmoid')
+        self.bn1 = nn.BatchNorm()
+        self.bn2 = nn.BatchNorm()
+
+    def forward(self, feature_x1, feature_x2, feature_x3):
+        low_feature = nd.concat(feature_x1[0], feature_x2[0], feature_x3[0], dim=1)
+        medium_orig = nd.concat(feature_x1[1], feature_x2[1], feature_x3[1], dim=1)
+        high_orig = nd.concat(feature_x1[2], feature_x2[2], feature_x3[2], dim=1)
+
+        medium_from_low = self.bn1(self.low_to_medium(low_feature))
+        medium_new = nd.concat(medium_from_low, medium_orig, dim=1)
+        high_from_medium = self.bn2(self.medium_to_high(medium_new))
+        high_new = nd.concat(high_from_medium, high_orig, dim=1)
+
+        out = self.layer1(high_new)
+        return out  # 保持维度统一，都是100维
 
 
 class farm(nn.Block):
@@ -256,6 +307,8 @@ class farm(nn.Block):
         self.generator = farm_generator()
         self.recommender = farm_recommender()
         self.feature_fusion = feature_fusion()
+        #         self.farm_predictor = farm_predictor()
+        self.farm_layer_fusion = farm_layer_fusion()
 
     def forward(self, x_img1, x_img2, x_img3, y_img, negative_img, y_desc, y_desc_drop, phase):
         enc_desc = self.description_embedding(y_desc)
@@ -265,12 +318,17 @@ class farm(nn.Block):
         enc_x3, *feature_x3 = self.encoder(x_img3)
         enc_yp, *feature_yp = self.encoder(y_img)
         enc_yn, *feature_yn = self.encoder(negative_img)
-        enc_x = self.feature_fusion(enc_x1, enc_x2, enc_x3)
+        #         out_p,out_n = self.farm_predictor(feature_x1, feature_x2, feature_x3,feature_yp, feature_yn)
+        out_p = self.farm_layer_fusion(feature_x1, feature_x2, feature_x3, feature_yp)
+        out_n = self.farm_layer_fusion(feature_x1, feature_x2, feature_x3, feature_yn)
+        enc_x = self.feature_fusion(feature_x1, feature_x2, feature_x3)
         z, z_mean, z_log_var = self.transformer(enc_x, enc_desc_drop)
         if phase == 'train':
-            y_rec_low, y_rec_high, *feature_yg = self.generator(z, enc_x, enc_desc_drop)  # feature_yg =[feature_1_yg, feature_2_yg, feature_3_yg]
+            y_rec_low, y_rec_high, *feature_yg = self.generator(z, enc_x,
+                                                                enc_desc_drop)  # feature_yg =[feature_1_yg, feature_2_yg, feature_3_yg]
         if phase == 'test':
-            y_rec_low, y_rec_high, *feature_yg = self.generator(z_mean, enc_x, enc_desc_drop)  # feature_yg =[feature_1_yg, feature_2_yg, feature_3_yg]
+            y_rec_low, y_rec_high, *feature_yg = self.generator(z_mean, enc_x,
+                                                                enc_desc_drop)  # feature_yg =[feature_1_yg, feature_2_yg, feature_3_yg]
         difference_pn = self.recommender(enc_x, feature_x1, feature_x2, feature_x3, enc_desc, enc_yp, enc_yn,
                                          feature_yp, feature_yn, feature_yg)
-        return y_rec_low, y_rec_high, difference_pn, z_mean, z_log_var  # feature_1_yp, feature_2_yp, feature_3_yp, feature_1_yn, feature_2_yn, feature_3_yn, feature_1_yg, feature_2_yg, feature_3_yg
+        return y_rec_low, y_rec_high, difference_pn, z_mean, z_log_var, out_p, out_n  # , feature_1_yp, feature_2_yp, feature_3_yp, feature_1_yn, feature_2_yn, feature_3_yn, feature_1_yg, feature_2_yg, feature_3_yg

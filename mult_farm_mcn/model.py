@@ -144,7 +144,7 @@ class CompatModel(nn.Module):
 
         self.layer_convs_fcs = nn.ModuleList()
         fashion_item_rep_len = [0, 256, 512, 1024, 2048]
-        fcs_output_size = [0, 32, 64, 128, 256]
+        fcs_output_size = [0, 64, 64, 64, 64]
         for i in range(1, len(fashion_item_rep_len)):
             rep_len = fashion_item_rep_len[i]
             input_size = 0
@@ -165,7 +165,7 @@ class CompatModel(nn.Module):
             multi_scale_fc = nn.Sequential(linear, nn.ReLU())
             self.layer_convs_fcs.append(multi_scale_fc)
 
-        self.multi_layer_predictor = nn.Linear(256 + 64, 1)
+        self.multi_layer_predictor = nn.Linear(64 + 64, 1)
         nn.init.xavier_uniform_(self.multi_layer_predictor.weight)
         nn.init.constant_(self.multi_layer_predictor.bias, 0)
 
@@ -458,7 +458,8 @@ class CompatModel(nn.Module):
             # 多层级融合模块一
             rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, 1, item_num, -1)
             # rep_l1 (16,1,4,256), rep_l2 (16,1,4,512), rep_l3 (16,1,4,1024), rep_l4 (16,1,4,2048)
-            rep_li_double = torch.cat((rep_li, rep_li), 2)  # (16,1,8,256), rep_l2 (16,1,8,512), rep_l3 (16,1,8,1024), rep_l4 (16,1,8,2048)
+            rep_li_copy = torch.cat((rep_li[:, :, 0, :], rep_li[:, :, 2, :], rep_li[:, :, 1, :], rep_li[:, :, 3, :]), 2).reshape(rep_li.shape)
+            rep_li_double = torch.cat((rep_li, rep_li_copy), 2)  # (16,1,8,256), rep_l2 (16,1,8,512), rep_l3 (16,1,8,1024), rep_l4 (16,1,8,2048)
 
             multi_scale_li_feature = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_convs[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
             cat_feature = torch.cat(multi_scale_li_feature, 1)
@@ -477,13 +478,13 @@ class CompatModel(nn.Module):
             multi_pool_reps.append(rep_li_pool)
 
         # 多层级特征融合模块1
-        layer1_to_2 = self.layer_convs_fcs[0](multi_scale_concats[0])  # [16, 256/2]
+        layer1_to_2 = self.layer_convs_fcs[0](multi_scale_concats[0])                # [16, 64]
         layer2_concat_layer1 = torch.cat((layer1_to_2, multi_scale_concats[1]), 1)
-        layer2_to_3 = self.layer_convs_fcs[1](layer2_concat_layer1)    # [16, 512/2]
+        layer2_to_3 = self.layer_convs_fcs[1](layer2_concat_layer1) + layer1_to_2    # [16, 64]
         layer3_concat_layer2 = torch.cat((layer2_to_3, multi_scale_concats[2]), 1)
-        layer3_to_4 = self.layer_convs_fcs[2](layer3_concat_layer2)    # [16, 1024/2]
+        layer3_to_4 = self.layer_convs_fcs[2](layer3_concat_layer2) + layer2_to_3    # [16, 64]
         layer4_concat_layer3 = torch.cat((layer3_to_4, multi_scale_concats[3]), 1)
-        layer4_to_out = self.layer_convs_fcs[3](layer4_concat_layer3)  # [16, 2048/2]
+        layer4_to_out = self.layer_convs_fcs[3](layer4_concat_layer3) + layer3_to_4  # [16, 64]
 
 
         # 多层级特征融合模块2
