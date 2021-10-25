@@ -20,7 +20,7 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--comment', type=str, default="avgpool_double_weight_(double_3d_conv:out_concat_one_fcs)_(two_fuse_module)_(double_rep)_res_fc")
+parser.add_argument('--comment', type=str, default="v5_res_fc_wo_3d_conv")
 args = parser.parse_args()
 
 print(args)
@@ -39,7 +39,7 @@ train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader 
 )
 
 # Device
-device = torch.device("cuda:0")
+device = torch.device("cuda:1")
 
 # Model
 model = CompatModel(embed_size=1000, need_rep=True, vocabulary=len(train_dataset.vocabulary),

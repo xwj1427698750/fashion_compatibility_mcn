@@ -165,43 +165,10 @@ class CompatModel(nn.Module):
             multi_scale_fc = nn.Sequential(linear, nn.ReLU())
             self.layer_convs_fcs.append(multi_scale_fc)
 
-        self.multi_layer_predictor = nn.Linear(64 + 64, 1)
+        self.multi_layer_predictor = nn.Linear(64, 1)
         nn.init.xavier_uniform_(self.multi_layer_predictor.weight)
         nn.init.constant_(self.multi_layer_predictor.bias, 0)
 
-        # 多层级融合模块2————采用3D卷积来融合多层的特征
-
-        # 通过池化的方式将每一层的特征统一尺寸
-        self.pool_layers = nn.ModuleList()
-        pool_strides = [1, 2, 4, 8]  # 512 / 2, 1024 / 4, 2048 / 8, 每一层经过池化后，得出的数据特征尺寸都是 4x256, 为了代码一致性加了1的情况
-        for stride in pool_strides:
-            self.pool_layers.append(nn.AvgPool2d(kernel_size=(1, stride), stride=(1, stride)))
-
-        # 构建需要的3D卷积网络
-        self.multi_3d_convs = nn.ModuleList()
-        self.multi_3d_convs2 = nn.ModuleList()
-        for filter_size in self.filter_sizes:  # 2, 3, 4
-            conv_3d_net = nn.Sequential(
-                nn.Conv3d(in_channels=1, out_channels=1, kernel_size=(filter_size, 2, 2), stride=(1, 1, 2)),  # 表示的是三维上的步长是1，在行方向上步长是1，在列方向上步长是2。
-                nn.BatchNorm3d(1),
-                nn.LeakyReLU(),
-                nn.AvgPool3d(kernel_size=(8 - filter_size + 1, 3, 3)),  # 输出维度是16, 1, 1, 1, 42
-            )
-            self.multi_3d_convs.append(conv_3d_net)
-            conv_3d_net2 = nn.Sequential(
-                nn.Conv3d(in_channels=1, out_channels=1, kernel_size=(filter_size, 2, 2), stride=(1, 1, 2)),
-                # 表示的是三维上的步长是1，在行方向上步长是1，在列方向上步长是2。
-                nn.BatchNorm3d(1),
-                nn.ReLU(),
-                nn.AvgPool3d(kernel_size=(8 - filter_size + 1, 3, 3)),  # 输出维度是16, 1, 1, 1, 42
-            )
-            self.multi_3d_convs2.append(conv_3d_net2)
-
-        self.conv_3d_fuse = nn.Sequential(
-            nn.Linear(42 * 3 * 2, 64),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-        )
 
     def forward(self, images, names):
         """
@@ -286,88 +253,6 @@ class CompatModel(nn.Module):
         features_loss = features.norm(2) / np.sqrt((features.shape[0] * features.shape[1]))
         return torch.tensor(0.), features_loss
 
-    def _compute_score(self, images, activate=True):
-        """Extract feature vectors from input images.
-        Return:
-            out: the compatibility score
-            features: the visual embedding of the images, we use 1000-d in all experiments
-            masks: the mask for type-specified embedding
-            rep: the representations of the second last year, which is 2048-d for resnet-50 backend
-        """
-        batch_size, item_num, _, _, img_size = images.shape
-        images = torch.reshape(images, (-1, 3, img_size, img_size))  # (batch_size*item_num->16*4, 3, 224, 224)
-        if self.need_rep:
-            features, *rep = self.cnn(images)
-            rep_l1, rep_l2, rep_l3, rep_l4, rep = rep  # 左侧的rep是倒数第二层的特征
-            # [80,256,56,56],[80,512,28,28],[80,1024,14,14]
-        else:
-            features = self.cnn(images)  # (batch_size * item_num -> 16*4, 1000)
-
-        relations = []
-        features = features.reshape(batch_size, item_num, -1)  # (batch_size->16, 4, 1000)
-        masks = F.relu(self.masks.weight)
-
-        masks_weight = [masks]  # 函数需要返回的所有mask权值列表
-
-        # Comparison matrix
-        if "4" in self.conv_feats:
-            for mi, (i, j) in enumerate(itertools.combinations_with_replacement([0, 1, 2, 3], 2)):
-                # 一共有10轮的循环 (i,j)->(0,0),(0,1),..,(1,1),(1,2),...(2,2),....,(3,3)
-                if self.pe_off:
-                    left = F.normalize(features[:, i:i+1, :], dim=-1)  # (batch_size->16, 1, 1000)
-                    right = F.normalize(features[:, j:j+1, :], dim=-1)
-                else:
-                    left = F.normalize(masks[mi] * features[:, i:i+1, :], dim=-1) # (batch_size->16, 1, 1000)
-                    right = F.normalize(masks[mi] * features[:, j:j+1, :], dim=-1)
-                rela = torch.matmul(left, right.transpose(1, 2)).squeeze() # (batch_size->16)
-                relations.append(rela) # （10,16）
-
-        # Comparision at Multi-Layered representations
-        rep_list = []
-        masks_list = []
-        if "1" in self.conv_feats:
-            rep_list.append(rep_l1); masks_list.append(self.masks_l1)
-        if "2" in self.conv_feats:
-            rep_list.append(rep_l2); masks_list.append(self.masks_l2)
-        if "3" in self.conv_feats:
-            rep_list.append(rep_l3); masks_list.append(self.masks_l3)
-        for rep_li, masks_li in zip(rep_list, masks_list):
-            rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, item_num, -1)
-            # rep_l1 (16,4,256), rep_l2 (16,4,512), rep_l3 (16,4,1024)
-            masks_li = F.relu(masks_li.weight)
-
-            masks_weight.append(masks_li)
-
-            # Enumerate all pairwise combination among the outfit then compare their features
-            for mi, (i, j) in enumerate(itertools.combinations_with_replacement([0, 1, 2, 3], 2)):
-                if self.pe_off: # 这个分支需要对比源代码判断一下
-                    left = F.normalize(masks_li[mi] * rep_li[:, i:i+1, :], dim=-1)  # (16, 1, rep_li.shape[-1])
-                    right = F.normalize(masks_li[mi] * rep_li[:, j:j+1, :], dim=-1)
-                else:
-                    left = F.normalize(masks_li[mi] * rep_li[:, i:i+1, :], dim=-1)  # (16, 1, 1000)
-                    right = F.normalize(masks_li[mi] * rep_li[:, j:j+1, :], dim=-1)
-                rela = torch.matmul(left, right.transpose(1, 2)).squeeze()  # (16)
-                relations.append(rela)
-        # relations 是个列表，10*4个元素，每个元素size是torch.Size([16]) [10*4,16]
-        if batch_size == 1: # Inference during evaluation, which input one sample
-            relations = torch.stack(relations).unsqueeze(0)
-        else:
-            relations = torch.stack(relations, dim=1)  # stack之后 torch.Size([16, 10*4])
-        relations = self.bn(relations)  # torch.Size([16, 10*4])
-
-        # Predictor
-        if self.mlp_layers == 0:
-            out = relations.mean(dim=-1, keepdim=True)
-        else:
-            out = self.predictor(relations) #torch.Size([16, 1])
-
-        if activate:
-            out = self.sigmoid(out)
-        if self.need_rep:
-            return out, features, masks_weight, rep
-        else:
-            return out, features, masks_weight
-
     def _compute_feature_fusion_score(self, images, activate=True):
         """Extract feature vectors from input images.
                 Return:
@@ -385,63 +270,6 @@ class CompatModel(nn.Module):
         else:
             features = self.cnn(images)  # (batch_size * item_num -> 16*4, 1000)
 
-        # # ------------------------------- mcn的比较模块 -----------------------------------------
-        # relations = []
-        # features = features.reshape(batch_size, item_num, -1)  # (batch_size->16, 4, 1000)
-        # masks = F.relu(self.masks.weight)
-        #
-        # masks_weight = [masks]  # 函数需要返回的所有mask权值列表
-        #
-        # # Comparison matrix
-        # if "4" in self.conv_feats:
-        #     for mi, (i, j) in enumerate(itertools.combinations_with_replacement([0, 1, 2, 3], 2)):
-        #         # 一共有10轮的循环 (i,j)->(0,0),(0,1),..,(1,1),(1,2),...(2,2),....,(3,3)
-        #         if self.pe_off:
-        #             left = F.normalize(features[:, i:i + 1, :], dim=-1)  # (batch_size->16, 1, 1000)
-        #             right = F.normalize(features[:, j:j + 1, :], dim=-1)
-        #         else:
-        #             left = F.normalize(masks[mi] * features[:, i:i + 1, :], dim=-1)  # (batch_size->16, 1, 1000)
-        #             right = F.normalize(masks[mi] * features[:, j:j + 1, :], dim=-1)
-        #         rela = torch.matmul(left, right.transpose(1, 2)).squeeze()  # (batch_size->16)
-        #         relations.append(rela)  # （10,16）
-        #
-        # # Comparision at Multi-Layered representations
-        # rep_list = []
-        # masks_list = []
-        # if "1" in self.conv_feats:
-        #     rep_list.append(rep_l1);
-        #     masks_list.append(self.masks_l1)
-        # if "2" in self.conv_feats:
-        #     rep_list.append(rep_l2);
-        #     masks_list.append(self.masks_l2)
-        # if "3" in self.conv_feats:
-        #     rep_list.append(rep_l3);
-        #     masks_list.append(self.masks_l3)
-        # for rep_li, masks_li in zip(rep_list, masks_list):
-        #     rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, item_num, -1)
-        #     # rep_l1 (16,4,256), rep_l2 (16,4,512), rep_l3 (16,4,1024)
-        #     masks_li = F.relu(masks_li.weight)
-        #
-        #     masks_weight.append(masks_li)
-        #
-        #     # Enumerate all pairwise combination among the outfit then compare their features
-        #     for mi, (i, j) in enumerate(itertools.combinations_with_replacement([0, 1, 2, 3], 2)):
-        #         if self.pe_off:  # 这个分支需要对比源代码判断一下
-        #             left = F.normalize(masks_li[mi] * rep_li[:, i:i + 1, :], dim=-1)  # (16, 1, rep_li.shape[-1])
-        #             right = F.normalize(masks_li[mi] * rep_li[:, j:j + 1, :], dim=-1)
-        #         else:
-        #             left = F.normalize(masks_li[mi] * rep_li[:, i:i + 1, :], dim=-1)  # (16, 1, 1000)
-        #             right = F.normalize(masks_li[mi] * rep_li[:, j:j + 1, :], dim=-1)
-        #         rela = torch.matmul(left, right.transpose(1, 2)).squeeze()  # (16)
-        #         relations.append(rela)
-        # # relations 是个列表，10*4个元素，每个元素size是torch.Size([16]) [10*4,16]
-        # if batch_size == 1:  # Inference during evaluation, which input one sample
-        #     relations = torch.stack(relations).unsqueeze(0)
-        # else:
-        #     relations = torch.stack(relations, dim=1)  # stack之后 torch.Size([16, 10*4])
-        # relations = self.bn(relations)  # torch.Size([16, 10*4])
-
-        #  ------------------------------------ 新添加的模块 --------------------------------------------
         #  多尺度特征融合
         rep_list = []
         if "1" in self.conv_feats:
@@ -472,11 +300,6 @@ class CompatModel(nn.Module):
             multi_scale_concats.append(cat_feature_fuse)  # [16, 3x255 + 2x254 + 1x253], [16, 3*511 + 2*510 + 1*509], [16, 3*1023 + 2*1022 + 1*1021], [16, 3*2047 + 2*2046 + 1*2045]
 
 
-            # 多层级融合模块2
-            # 池化层统一尺寸， 每一个都变成(16, 1, 4, 256)
-            rep_li_pool = self.pool_layers[i](rep_li)
-            multi_pool_reps.append(rep_li_pool)
-
         # 多层级特征融合模块1
         layer1_to_2 = self.layer_convs_fcs[0](multi_scale_concats[0])                # [16, 64]
         layer2_concat_layer1 = torch.cat((layer1_to_2, multi_scale_concats[1]), 1)
@@ -486,26 +309,7 @@ class CompatModel(nn.Module):
         layer4_concat_layer3 = torch.cat((layer3_to_4, multi_scale_concats[3]), 1)
         layer4_to_out = self.layer_convs_fcs[3](layer4_concat_layer3) + layer3_to_4  # [16, 64]
 
-
-        # 多层级特征融合模块2
-        multi_pool_concats = torch.cat(multi_pool_reps, 1)  # (16, 4, 4, 256)
-        multi_pool_concats = torch.cat((multi_pool_concats, multi_pool_concats), 1)
-        multi_pool_concats = multi_pool_concats.reshape(batch_size, 1, len(rep_list)*2, item_num, -1)  # (16, 1, 8, 4, 256)
-        multi_3d_conv_rep = []
-        for i in range(len(self.filter_sizes)):
-            multi_3d_conv_rep.append(self.multi_3d_convs[i](multi_pool_concats).reshape(batch_size, -1))
-        multi_3d_conv_rep = torch.cat(multi_3d_conv_rep, 1)
-
-        multi_3d_conv_rep2 = []
-        for i in range(len(self.filter_sizes)):
-            multi_3d_conv_rep2.append(self.multi_3d_convs2[i](multi_pool_concats).reshape(batch_size, -1))
-        multi_3d_conv_rep2 = torch.cat(multi_3d_conv_rep2, 1)
-
-        multi_3d_conv_fuse = torch.cat((multi_3d_conv_rep, multi_3d_conv_rep2), 1)
-        multi_3d_conv_fuse_out = self.conv_3d_fuse(multi_3d_conv_fuse)
-        # 预测
-        fuse_feature = torch.cat((layer4_to_out, multi_3d_conv_fuse_out), 1)
-
+        fuse_feature = layer4_to_out
         out = self.multi_layer_predictor(fuse_feature)
         if activate:
             out = self.sigmoid(out)
