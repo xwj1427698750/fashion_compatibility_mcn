@@ -130,8 +130,9 @@ def train(model, device, train_loader, val_loader, comment):
         positive_acc = sum(outputs[targets==1]>0.5) / len(outputs)
         logging.info("Positive accuracy: {:.4f}".format(positive_acc))
         # Save best model
-        saver.save(auc, model.state_dict(), epoch)
+        saver.save(auc, accuracy, model.state_dict(), epoch)
         logging.info("Best AUC is : {:.4f} Best_epoch is {}".format(saver.best, saver.best_epoch))  # 输出已经选择好的最佳模型
+        logging.info("Best ACC is : {:.4f} Best_epoch is {}".format(saver.best_acc, saver.best_acc_epoch))  # 输出已经选择好的最佳模型
 
 if __name__ == "__main__":
     train(model, device, train_loader, val_loader, comment)

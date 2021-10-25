@@ -56,13 +56,28 @@ class BestSaver(object):
         self.best = float('-inf')
         self.best_epoch = 0  # 取得最佳成绩的轮次
 
-    def save(self, metric, data, epoch):
+        # ------------------------ 根据ACC的任务来保存优秀的模型判断 ---------------------------
+        acc_save_path = "model_acc_{}".format(exe_fname.split(".")[0])
+        if comment is not None and str(comment):
+            acc_save_path = acc_save_path + "_acc_" + str(comment)
+
+        acc_save_path = acc_save_path + ".pth"
+        self.acc_save_path = acc_save_path
+        self.best_acc = float('-inf')
+        self.best_acc_epoch = 0  # 取得最佳成绩的轮次
+
+    def save(self, metric, acc, data, epoch):
         if metric > self.best:
             self.best = metric
             self.best_epoch = epoch
             torch.save(data, self.save_path)
             logging.info("Saved best model to {}".format(self.save_path))
 
+        if acc >= self.best_acc:
+            self.best_acc = acc
+            self.best_acc_epoch = epoch
+            torch.save(data, self.acc_save_path)
+            logging.info("Saved best acc model to {}".format(self.acc_save_path))
 
 def config_logging(comment=None):
     """Configure logging for training log. The format is 
