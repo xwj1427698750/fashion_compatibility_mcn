@@ -79,18 +79,21 @@ class CompatModel(nn.Module):
 
         # 多尺度融合层每一层的卷积核
         self.filter_sizes = [2, 3, 4]
-        rep_weight = 8  # 套装的个数，正常是4，如果将套装复制然后拼接了一次，就可以得到8了
-        self.layer_convs = nn.ModuleList()  # 4 x 3 , 一共有4层, 每一层有3个卷积核
-        self.layer_convs2 = nn.ModuleList()  # 4 x 3 , 一共有4层, 每一层有3个卷积核
+        layer_feature_weights = [256, 512, 1024, 2048]
+        rep_weight = 9  # 套装的个数，正常是4，如果将套装复制然后拼接了一次，就可以得到8了 ,又加了第一件，为了能够获得所有的22组合，33组合
+        self.layer_wide_convs = nn.ModuleList()  # 4 x 3 , 一共有4层, 每一层有3个卷积核
+        self.layer_deep_convs = nn.ModuleList()  # 4 x 3 , 一共有4层, 每一层有3个卷积核
         for i in range(4):
             multi_convs = nn.ModuleList()
             multi_convs2 = nn.ModuleList()
             for size in self.filter_sizes:
+                stride = (1, 1)
+                if size == 4:
+                    stride = (size, 1)
                 conv_net = nn.Sequential(
-                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(1, size * size)),
+                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=(size, layer_feature_weights[i]), stride=stride),
                     nn.BatchNorm2d(1),
-                    nn.LeakyReLU(),
-                    nn.AvgPool2d(kernel_size=(rep_weight - size + 1, rep_weight // 2 - size + 1)),
+                    nn.ReLU(),
                     nn.Flatten(),
                 )
                 multi_convs.append(conv_net)
@@ -104,8 +107,8 @@ class CompatModel(nn.Module):
                 )
                 multi_convs2.append(conv_net2)
 
-            self.layer_convs.append(multi_convs)
-            self.layer_convs2.append(multi_convs2)
+            self.layer_wide_convs.append(multi_convs)
+            self.layer_deep_convs.append(multi_convs2)
         # stride = size * size, 以下尺寸均为单个batch的
         # rep_len: 256
         # size = 2, 卷积后的张量尺寸 h1 = 3, w1 = 64, 池化后的张量尺寸为 h2 = 1, w2 = 21
@@ -156,7 +159,7 @@ class CompatModel(nn.Module):
                 wi = wi // hi
                 hi = 1
                 input_size = input_size + hi * wi
-            input_size = input_size * 2 + fcs_output_size[i - 1]
+            input_size = input_size + fcs_output_size[i - 1]
             output_size = fcs_output_size[i]
 
             linear = nn.Linear(input_size, output_size)
@@ -165,7 +168,7 @@ class CompatModel(nn.Module):
             multi_scale_fc = nn.Sequential(linear, nn.ReLU())
             self.layer_convs_fcs.append(multi_scale_fc)
 
-        self.multi_layer_predictor = nn.Linear(64, 1)
+        self.multi_layer_predictor = nn.Linear(64 + 68, 1)
         nn.init.xavier_uniform_(self.multi_layer_predictor.weight)
         nn.init.constant_(self.multi_layer_predictor.bias, 0)
 
@@ -281,26 +284,31 @@ class CompatModel(nn.Module):
         if "4" in self.conv_feats:
             rep_list.append(rep_l4)
         multi_scale_concats = []
-        multi_pool_reps = []
+        layer_wide_output = []
         for i, rep_li in enumerate(rep_list):
-            # 多层级融合模块一
+            # wide融合模块
             rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, 1, item_num, -1)
             # rep_l1 (16,1,4,256), rep_l2 (16,1,4,512), rep_l3 (16,1,4,1024), rep_l4 (16,1,4,2048)
-            rep_li_copy = torch.cat((rep_li[:, :, 0, :], rep_li[:, :, 2, :], rep_li[:, :, 1, :], rep_li[:, :, 3, :]), 2).reshape(rep_li.shape)
-            rep_li_double = torch.cat((rep_li, rep_li_copy), 2)  # (16,1,8,256), rep_l2 (16,1,8,512), rep_l3 (16,1,8,1024), rep_l4 (16,1,8,2048)
+            shape = rep_li.shape
+            rep_li_copy = torch.cat((rep_li[:, :, 0, :], rep_li[:, :, 2, :], rep_li[:, :, 1, :], rep_li[:, :, 3, :],
+                                     rep_li[:, :, 0, :]), 2).reshape(shape[0], shape[1], shape[2] + 1, shape[3])
+            rep_li_double = torch.cat((rep_li, rep_li_copy), 2)  # (16,1,9,256), rep_l2 (16,1,9,512), rep_l3 (16,1,9,1024), rep_l4 (16,1,9,2048)
 
-            multi_scale_li_feature = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_convs[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
-            cat_feature = torch.cat(multi_scale_li_feature, 1)
-            # cat_feature [16 x (21 + 14 + 16)], [16 x (42 + 28 + 32)], [16 x (85 + 57 + 64)], [16 x (170 + 114 + 128 )]
+            multi_scale_li_feature = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_wide_convs[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
+            wide_cat_feature = torch.cat(multi_scale_li_feature, 1)  # wide_cat_feature  每层都是[16 ,(8 + 7 + 2)]
+            layer_wide_output.append(wide_cat_feature)  # [4, 16, (8 + 7 + 2)]
 
-            multi_scale_li_feature2 = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_convs2[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
-            cat_feature2 = torch.cat(multi_scale_li_feature2, 1)
+            # deep融合模块
+            multi_scale_li_feature2 = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_deep_convs[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
+            deep_cat_feature = torch.cat(multi_scale_li_feature2, 1)
+            # deep_cat_feature [16 x (21 + 14 + 16)], [16 x (42 + 28 + 32)], [16 x (85 + 57 + 64)], [16 x (170 + 114 + 128 )]
 
-            cat_feature_fuse = torch.cat((cat_feature, cat_feature2), 1)
-            multi_scale_concats.append(cat_feature_fuse)  # [16, 3x255 + 2x254 + 1x253], [16, 3*511 + 2*510 + 1*509], [16, 3*1023 + 2*1022 + 1*1021], [16, 3*2047 + 2*2046 + 1*2045]
+            multi_scale_concats.append(deep_cat_feature)  # [16, 3x255 + 2x254 + 1x253], [16, 3*511 + 2*510 + 1*509], [16, 3*1023 + 2*1022 + 1*1021], [16, 3*2047 + 2*2046 + 1*2045]
 
+        # wide层级汇合部分
+        layer_wide_output = torch.cat(layer_wide_output, 1)  # [16, 4 X (8 + 7 + 2)] = [16, 68]
 
-        # 多层级特征融合模块1
+        # deep层级特征融合模块
         layer1_to_2 = self.layer_convs_fcs[0](multi_scale_concats[0])                # [16, 64]
         layer2_concat_layer1 = torch.cat((layer1_to_2, multi_scale_concats[1]), 1)
         layer2_to_3 = self.layer_convs_fcs[1](layer2_concat_layer1) + layer1_to_2    # [16, 64]
@@ -309,7 +317,7 @@ class CompatModel(nn.Module):
         layer4_concat_layer3 = torch.cat((layer3_to_4, multi_scale_concats[3]), 1)
         layer4_to_out = self.layer_convs_fcs[3](layer4_concat_layer3) + layer3_to_4  # [16, 64]
 
-        fuse_feature = layer4_to_out
+        fuse_feature = torch.cat((layer_wide_output, layer4_to_out), 1)  # [16, 64 + 68]
         out = self.multi_layer_predictor(fuse_feature)
         if activate:
             out = self.sigmoid(out)

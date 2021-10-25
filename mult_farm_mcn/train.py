@@ -20,7 +20,7 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--comment', type=str, default="v5_res_fc_wo_3d_conv")
+parser.add_argument('--comment', type=str, default="v5_wide_deep")
 args = parser.parse_args()
 
 print(args)
@@ -55,7 +55,7 @@ def train(model, device, train_loader, val_loader, comment):
     epochs = 50
     for epoch in range(1, epochs + 1):
         logging.info("Train Phase, Epoch: {}".format(epoch))
-        scheduler.step()
+
         total_losses = AverageMeter()
         clf_losses = AverageMeter()
         vse_losses = AverageMeter()
@@ -99,6 +99,7 @@ def train(model, device, train_loader, val_loader, comment):
                     )
                 )
         logging.info("Train Loss (clf_loss): {:.4f}".format(clf_losses.avg))
+        scheduler.step()
 
         # Valid Phase
         logging.info("Valid Phase, Epoch: {}".format(epoch))
