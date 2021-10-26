@@ -20,7 +20,7 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--comment', type=str, default="v5_wide_deep")
+parser.add_argument('--comment', type=str, default="v5_wide_deep_scale(double_conv)")
 args = parser.parse_args()
 
 print(args)
@@ -39,7 +39,7 @@ train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader 
 )
 
 # Device
-device = torch.device("cuda:1")
+device = torch.device("cuda:0")
 
 # Model
 model = CompatModel(embed_size=1000, need_rep=True, vocabulary=len(train_dataset.vocabulary),
@@ -50,7 +50,7 @@ def train(model, device, train_loader, val_loader, comment):
     model = model.to(device)
     criterion = nn.BCELoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-2, momentum=0.9)
-    scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.9)
     saver = BestSaver(comment)
     epochs = 50
     for epoch in range(1, epochs + 1):

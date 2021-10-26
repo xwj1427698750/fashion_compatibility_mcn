@@ -82,18 +82,29 @@ class CompatModel(nn.Module):
         layer_feature_weights = [256, 512, 1024, 2048]
         rep_weight = 9  # 套装的个数，正常是4，如果将套装复制然后拼接了一次，就可以得到8了 ,又加了第一件，为了能够获得所有的22组合，33组合
         self.layer_wide_convs = nn.ModuleList()  # 4 x 3 , 一共有4层, 每一层有3个卷积核
-        self.layer_deep_convs = nn.ModuleList()  # 4 x 3 , 一共有4层, 每一层有3个卷积核
+        self.layer_deep1_convs = nn.ModuleList()  # 4 x 3 , 一共有4层, 每一层有3个卷积核
+        self.layer_deep2_convs = nn.ModuleList()  # 4 x 3 , 一共有4层, 每一层有3个卷积核
         for i in range(4):
+            multi_convs_wide = nn.ModuleList()
             multi_convs = nn.ModuleList()
             multi_convs2 = nn.ModuleList()
             for size in self.filter_sizes:
                 stride = (1, 1)
                 if size == 4:
                     stride = (size, 1)
-                conv_net = nn.Sequential(
-                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=(size, layer_feature_weights[i]), stride=stride),
+                conv_net_wide = nn.Sequential(
+                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=(size, layer_feature_weights[i]),stride=stride),
                     nn.BatchNorm2d(1),
                     nn.ReLU(),
+                    nn.Flatten(),
+                )
+                multi_convs_wide.append(conv_net_wide)
+
+                conv_net = nn.Sequential(
+                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(1, size * size)),
+                    nn.BatchNorm2d(1),
+                    nn.LeakyReLU(),
+                    nn.AvgPool2d(kernel_size=(rep_weight - size + 1, rep_weight // 2 - size + 1)),
                     nn.Flatten(),
                 )
                 multi_convs.append(conv_net)
@@ -107,8 +118,9 @@ class CompatModel(nn.Module):
                 )
                 multi_convs2.append(conv_net2)
 
-            self.layer_wide_convs.append(multi_convs)
-            self.layer_deep_convs.append(multi_convs2)
+            self.layer_wide_convs.append(multi_convs_wide)
+            self.layer_deep1_convs.append(multi_convs)
+            self.layer_deep2_convs.append(multi_convs2)
         # stride = size * size, 以下尺寸均为单个batch的
         # rep_len: 256
         # size = 2, 卷积后的张量尺寸 h1 = 3, w1 = 64, 池化后的张量尺寸为 h2 = 1, w2 = 21
@@ -159,7 +171,7 @@ class CompatModel(nn.Module):
                 wi = wi // hi
                 hi = 1
                 input_size = input_size + hi * wi
-            input_size = input_size + fcs_output_size[i - 1]
+            input_size = input_size * 2 + fcs_output_size[i - 1]
             output_size = fcs_output_size[i]
 
             linear = nn.Linear(input_size, output_size)
@@ -296,14 +308,19 @@ class CompatModel(nn.Module):
 
             multi_scale_li_feature = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_wide_convs[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
             wide_cat_feature = torch.cat(multi_scale_li_feature, 1)  # wide_cat_feature  每层都是[16 ,(8 + 7 + 2)]
-            layer_wide_output.append(wide_cat_feature)  # [4, 16, (8 + 7 + 2)]
+            layer_wide_output.append(wide_cat_feature)  # layer_wide_output是一个list 包含4个[16, (8 + 7 + 2)]
 
             # deep融合模块
-            multi_scale_li_feature2 = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_deep_convs[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
-            deep_cat_feature = torch.cat(multi_scale_li_feature2, 1)
-            # deep_cat_feature [16 x (21 + 14 + 16)], [16 x (42 + 28 + 32)], [16 x (85 + 57 + 64)], [16 x (170 + 114 + 128 )]
+            multi_scale_li_feature = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_deep1_convs[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
+            cat_feature1 = torch.cat(multi_scale_li_feature, 1)
+            # cat_feature [16 x (21 + 14 + 16)], [16 x (42 + 28 + 32)], [16 x (85 + 57 + 64)], [16 x (170 + 114 + 128 )]
 
-            multi_scale_concats.append(deep_cat_feature)  # [16, 3x255 + 2x254 + 1x253], [16, 3*511 + 2*510 + 1*509], [16, 3*1023 + 2*1022 + 1*1021], [16, 3*2047 + 2*2046 + 1*2045]
+            multi_scale_li_feature2 = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_deep2_convs[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
+            cat_feature2 = torch.cat(multi_scale_li_feature2, 1)
+            # cat_feature [16 x (21 + 14 + 16)], [16 x (42 + 28 + 32)], [16 x (85 + 57 + 64)], [16 x (170 + 114 + 128 )]
+
+            cat_feature_fuse = torch.cat((cat_feature1, cat_feature2), 1)
+            multi_scale_concats.append(cat_feature_fuse)  # [16, 3x255 + 2x254 + 1x253], [16, 3*511 + 2*510 + 1*509], [16, 3*1023 + 2*1022 + 1*1021], [16, 3*2047 + 2*2046 + 1*2045]
 
         # wide层级汇合部分
         layer_wide_output = torch.cat(layer_wide_output, 1)  # [16, 4 X (8 + 7 + 2)] = [16, 68]

@@ -18,7 +18,7 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--model_path', type=str, default="./model_train_v5_wide_deep.pth")
+parser.add_argument('--model_path', type=str, default="./model_train_v5_wide_deep_scale(double_conv).pth")
 args = parser.parse_args()
 
 print(args)
@@ -34,7 +34,7 @@ train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader 
 )
 
 # Load pretrained weights
-device = torch.device("cuda:1")
+device = torch.device("cuda:0")
 model = CompatModel(embed_size=1000, need_rep=True, vocabulary=len(train_dataset.vocabulary),
                     vse_off=vse_off, pe_off=pe_off, mlp_layers=mlp_layers, conv_feats=conv_feats).to(device)
 model.load_state_dict(torch.load(model_path))

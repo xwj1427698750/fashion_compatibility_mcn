@@ -32,11 +32,10 @@ def test_compatibility_auc(test_auc_dataset, embeddingnet):
         print("#{}/{}\r".format(i, len(test_auc_dataset)), end="", flush=True)
         conditions = torch.tensor(
             [
-                [-1, 0, 1, 2, 3],
-                [0, -1, 4, 5, 6],
-                [1, 4, -1, 7, 8],
-                [2, 5, 7, -1, 9],
-                [3, 6, 8, 9, -1],
+                [-1, 0, 1, 2],
+                [0, -1, 3, 4],
+                [1, 3, -1, 5],
+                [2, 4, 5, -1],
             ],
             requires_grad=False,
         ).to(device)
@@ -63,22 +62,15 @@ def test_fitb_quesitons(test_fitb_dataset, embeddingnet):
         outfit_scores = []
         conditions = torch.tensor(
             [
-                [-1, 0, 1, 2, 3],
-                [0, -1, 4, 5, 6],
-                [1, 4, -1, 7, 8],
-                [2, 5, 7, -1, 9],
-                [3, 6, 8, 9, -1],
+                [-1, 0, 1, 2],
+                [0, -1, 3, 4],
+                [1, 3, -1, 5],
+                [2, 4, 5, -1],
             ],
             requires_grad=False,
         ).to(device)
         items, labels, question_part, question_id, options, option_labels = test_fitb_dataset.get_fitb_quesiton(i)
-        question_part = {
-            "upper": 0,
-            "bottom": 1,
-            "shoe": 2,
-            "bag": 3,
-            "accessory": 4,
-        }.get(question_part)
+        question_part = {"upper": 0, "bottom": 1, "shoe": 2, "bag": 3}.get(question_part)
 
         images = items.to(device)
         labels = list(map(lambda e: 0 if "mean" in e else 1, labels))
@@ -114,7 +106,7 @@ def calc_outfit_score(images, labels, conditions, embeddingnet):
     mask = []
     outfit_score = 0.0
 
-    for a, b in itertools.combinations(range(0, 5), 2):
+    for a, b in itertools.combinations(range(0, 4), 2):
         if labels[a] == 0 or labels[b] == 0:
             mask.append(0)
         else:
@@ -129,7 +121,7 @@ def calc_outfit_score(images, labels, conditions, embeddingnet):
     conds = torch.stack(conds)
     with torch.no_grad():
         embs = embeddingnet(inputs, conds)[0]
-    embs = embs.reshape(10, 2, -1)
+    embs = embs.reshape(6, 2, -1)
     embs = F.normalize(embs, dim=2)
     dist = F.pairwise_distance(embs[:, 0, :], embs[:, 1, :])
     mask = torch.tensor(mask).float().to(device)
@@ -142,7 +134,7 @@ def main():
     # Dataloader
     transform = torchvision.transforms.Compose(
         [
-            torchvision.transforms.Scale((img_size, img_size)),
+            torchvision.transforms.Resize((img_size, img_size)),
             torchvision.transforms.CenterCrop(112),
             torchvision.transforms.RandomHorizontalFlip(),
             torchvision.transforms.ToTensor(),
@@ -152,16 +144,16 @@ def main():
         ]
     )
     train_dataset = TripletDataset(
-        root_dir="../../data/images/",
+        root_dir="../../data/images2/",
         data_dir="../../data/",
         transform=transform
     )
     test_auc_dataset = CategoryDataset(
-        root_dir="../../data/images/",
+        root_dir="../../data/images2/",
         data_dir="../../data/",
         transform=transform,
         use_mean_img=True,
-        data_file="test_no_dup_with_category_3more_name.json",
+        data_file="test.json",
         neg_samples=True,
     )
 
@@ -176,14 +168,20 @@ def main():
     tnet = tnet.to(device)
     tnet.eval()
     embeddingnet = tnet.embeddingnet
-
-    # Test
-    auc = test_compatibility_auc(test_auc_dataset, embeddingnet)
-    print("AUC: {:.4f}".format(auc))
-    fitb_accuracy = test_fitb_quesitons(test_auc_dataset, embeddingnet)
-    print("Fitb Accuracy: {:.4f}".format(fitb_accuracy))
-    # AUC: 0.8413 ACC: 0.5656
-
+    test_num = 10
+    auc_epochs = []
+    fitb_epochs = []
+    for epoch in range(test_num):
+        # Test
+        auc = test_compatibility_auc(test_auc_dataset, embeddingnet)
+        print("test:{} AUC: {:.4f}".format(epoch + 1, auc))
+        auc_epochs.append(auc)
+        fitb_acc = test_fitb_quesitons(test_auc_dataset, embeddingnet)
+        print("test:{} FitB ACC: {:.4f}".format(epoch + 1, fitb_acc))
+        fitb_epochs.append(fitb_acc)
+    auc_epochs = np.array(auc_epochs)
+    fitb_epochs = np.array(fitb_epochs)
+    print(f"average compat AUC is {auc_epochs.mean()} average fitb acc is {fitb_epochs.mean()}")
 
 if __name__ == "__main__":
     main()
