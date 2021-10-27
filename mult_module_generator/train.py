@@ -20,7 +20,7 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--generator_type', type=str, default="upper")
+parser.add_argument('--generator_type', type=str, default="bottom")
 parser.add_argument('--comment', type=str, default="generator_fuse")
 parser.add_argument('--clip', type=int, default=5)
 args = parser.parse_args()
@@ -40,7 +40,7 @@ config_logging(comment)
 batch_size = 8
 # Dataloader
 train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader = (
-    prepare_dataloaders(batch_size=batch_size)
+    prepare_dataloaders(batch_size=batch_size, generator_type=generator_type)
 )
 
 # Device
@@ -61,7 +61,7 @@ def train(model, device, train_loader, val_loader, comment):
     log_sigmoid = nn.LogSigmoid()
     # optimizer = torch.optim.SGD(model.parameters(), lr=1e-2, momentum=0.9)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+    # scheduler = lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.8)
     saver = BestSaver(comment)
     epochs = 50
 
@@ -87,15 +87,17 @@ def train(model, device, train_loader, val_loader, comment):
             # Forward   前向训练只需要 图像和文本数据
             out_pos, out_neg, low_resolution_img, high_resolution_img, difference_score, z_mean, z_log_var = model(images, names)
 
-            # BCE Loss
-            clf_loss_param = 10
-            pos_outfit_target = torch.ones(size=[batch_size]).to(device)
-            out_pos = out_pos.squeeze(dim=1)
-            pos_clf_loss = clf_loss_param * criterion(out_pos, pos_outfit_target)
-
-            neg_outfit_target = torch.zeros(size=[batch_size]).to(device)
-            out_neg = out_neg.squeeze(dim=1)
-            neg_clf_loss = clf_loss_param * criterion(out_neg, neg_outfit_target)
+            # # BCE Loss
+            # clf_loss_param = 100
+            # pos_outfit_target = torch.ones(size=[batch_size]).to(device)
+            # out_pos = out_pos.squeeze(dim=1)
+            # pos_clf_loss = clf_loss_param * criterion(out_pos, pos_outfit_target)
+            #
+            # neg_outfit_target = torch.zeros(size=[batch_size]).to(device)
+            # out_neg = out_neg.squeeze(dim=1)
+            # neg_clf_loss = clf_loss_param * criterion(out_neg, neg_outfit_target)
+            pos_clf_loss = torch.tensor(0)
+            neg_clf_loss = torch.tensor(0)
 
             # BPR LOSS
             bpr_param = 100
@@ -103,8 +105,8 @@ def train(model, device, train_loader, val_loader, comment):
 
             # Generator LOSS
             shape = low_resolution_img.shape
-            l1_loss_param = shape[1] * shape[2] * shape[3]
-            l2_loss_param = shape[1] * shape[2] * shape[3]
+            l1_loss_param = shape[1] * shape[2] * shape[0]
+            l2_loss_param = shape[1] * shape[2] * shape[0]
 
             l2_loss = l1_loss_param * get_l2_loss(low_resolution_img, generator_target_img)
             l1_loss = l2_loss_param * get_l1_loss(high_resolution_img, generator_target_img)
@@ -133,7 +135,7 @@ def train(model, device, train_loader, val_loader, comment):
                         epoch, epochs, batch_num, clf_losses.val, bpr_losses.val, l2_losses.val, l1_losses.val, kl_losses.val, total_losses.val
                     )
                 )
-        scheduler.step()
+        # scheduler.step()
         logging.info("Train Loss (total_loss): {:.4f}".format(total_losses.avg))
 
         # Valid Phase 验证fitb，取结果好的

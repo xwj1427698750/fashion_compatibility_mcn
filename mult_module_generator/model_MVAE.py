@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils.rnn as rnn_utils
+import math
 
 from model import CompatModel
 
@@ -15,6 +16,101 @@ def convtrans2D_output_size(img_size, padding, kernel_size, stride):
     outshape = ((img_size[0] - 1) * stride[0] - 2 * padding[0] + kernel_size[0],
                 (img_size[1] - 1) * stride[1] - 2 * padding[1] + kernel_size[1])
     return outshape
+
+
+class LayerNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-12):
+        """Construct a layernorm module in the TF style (epsilon inside the square root).
+        """
+        super(LayerNorm, self).__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.bias = nn.Parameter(torch.zeros(hidden_size))
+        self.variance_epsilon = eps
+
+    def forward(self, x):
+        u = x.mean(-1, keepdim=True)
+        s = (x - u).pow(2).mean(-1, keepdim=True)
+        x = (x - u) / torch.sqrt(s + self.variance_epsilon)
+        return self.weight * x + self.bias
+
+
+class SelfAttention(nn.Module):
+    def __init__(self, num_attention_heads, input_size, hidden_size, hidden_dropout_prob):
+        super(SelfAttention, self).__init__()
+        if hidden_size % num_attention_heads != 0:
+            raise ValueError(
+                "The hidden size (%d) is not a multiple of the number of attention "
+                "heads (%d)" % (hidden_size, num_attention_heads))
+        self.num_attention_heads = num_attention_heads
+        self.attention_head_size = hidden_size // num_attention_heads
+        self.all_head_size = hidden_size
+
+        self.query = nn.Linear(input_size, self.all_head_size)
+        self.key = nn.Linear(input_size, self.all_head_size)
+        self.value = nn.Linear(input_size, self.all_head_size)
+
+        # self.attn_dropout = nn.Dropout(attention_probs_dropout_prob)
+
+        # 做完self-attention 做一个前馈全连接 LayerNorm 输出
+        self.dense = nn.Linear(hidden_size, hidden_size)
+        self.LayerNorm = LayerNorm(hidden_size, eps=1e-12)
+        self.out_dropout = nn.Dropout(hidden_dropout_prob)
+        self.flatten = nn.Flatten()
+
+    def transpose_for_scores(self, x):
+        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
+        x = x.view(*new_x_shape)
+        return x.permute(0, 2, 1, 3)
+
+    def forward(self, input_tensor):
+        """
+        input_tensor's shape = (batch, n, input_size) = (batch_size, 3, 256|512|1024|2048)
+        """
+        # mixed_xxx_layer'shape = (batch, n, all_head_size)
+        mixed_query_layer = self.query(input_tensor)
+        mixed_key_layer = self.key(input_tensor)
+        mixed_value_layer = self.value(input_tensor)
+
+        # xxx_layer'shape = (batch, num_attention_heads, n, attention_head_size)
+        query_layer = self.transpose_for_scores(mixed_query_layer)
+        key_layer = self.transpose_for_scores(mixed_key_layer)
+        value_layer = self.transpose_for_scores(mixed_value_layer)
+
+        # Take the dot product between "query" and "key" to get the raw attention scores.
+        # attention_scores'shape = (batch, num_attention_heads, n, n) 最后的的维度(每一行)的内容是时尚单品1对其他单品的attention得分
+        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+
+        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
+        # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
+        # [batch_size heads seq_len seq_len] scores
+        # [batch_size 1 1 seq_len]
+
+        # attention_scores = attention_scores + attention_mask
+
+        # Normalize the attention scores to probabilities.
+        attention_probs = nn.Softmax(dim=-1)(attention_scores)
+        # This is actually dropping out entire tokens to attend to, which might
+        # seem a bit unusual, but is taken from the original Transformer paper.
+
+        # attention_probs = self.attn_dropout(attention_probs)
+
+        # context_layer'shape = (batch,num_attention_heads,n,attention_head_size)
+        # 这里是attention得分和value加权求得的均值
+        context_layer = torch.matmul(attention_probs, value_layer)
+
+        # 变换context_layer维度，为了后面将各头得到的结果拼接。这里的contiguous()是将tensor的内存变成连续的，为后面的view()做准备。
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+
+        # 将各注意力头的结果拼接起来，context_layer：(batch,n,all_head_size)
+        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        context_layer = context_layer.view(*new_context_layer_shape)
+
+        hidden_states = self.dense(context_layer)
+        hidden_states = self.out_dropout(hidden_states)
+        # hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        hidden_states = self.LayerNorm(hidden_states)  # (batch,n, all_head_size) 输出的维度
+        out = self.flatten(hidden_states)  # 输出(batch, n x all_head_size)
+        return out
 
 
 # 隐变量的特征融合模块
@@ -56,7 +152,7 @@ class LatentFeatureFuse(nn.Module):
         # 多层级融合模块
         self.layer_convs_fcs = nn.ModuleList()
         fashion_item_rep_len = [0, 256, 512, 1024, 2048]
-        fcs_output_size = [0, 32, 64, 128, 256]
+        fcs_output_size = [0, 64, 64, 64, 64]
         for i in range(1, len(fashion_item_rep_len)):
             rep_len = fashion_item_rep_len[i]
             input_size = 0
@@ -130,13 +226,13 @@ class LatentFeatureFuse(nn.Module):
             out_features.append(self.get_features[i](rep_li_flatten))
 
         # 多层级特征融合模块1
-        layer1_to_2 = self.layer_convs_fcs[0](multi_scale_concats[0])  # [batch_size, 32]
+        layer1_to_2 = self.layer_convs_fcs[0](multi_scale_concats[0])                # [batch_size, 64]
         layer2_concat_layer1 = torch.cat((layer1_to_2, multi_scale_concats[1]), 1)
-        layer2_to_3 = self.layer_convs_fcs[1](layer2_concat_layer1)  # [batch_size, 64]
+        layer2_to_3 = self.layer_convs_fcs[1](layer2_concat_layer1) + layer1_to_2   # [batch_size, 64]
         layer3_concat_layer2 = torch.cat((layer2_to_3, multi_scale_concats[2]), 1)
-        layer3_to_4 = self.layer_convs_fcs[2](layer3_concat_layer2)  # [batch_size, 128]
+        layer3_to_4 = self.layer_convs_fcs[2](layer3_concat_layer2) + layer2_to_3   # [batch_size, 64]
         layer4_concat_layer3 = torch.cat((layer3_to_4, multi_scale_concats[3]), 1)
-        layer4_to_out = self.layer_convs_fcs[3](layer4_concat_layer3)  # [batch_size, 256]
+        layer4_to_out = self.layer_convs_fcs[3](layer4_concat_layer3) + layer3_to_4 # [batch_size, 64]
 
         rep_pos_l1, rep_pos_l2, rep_pos_l3, rep_pos_l4 = reps_pos  # 左侧的rep是倒数第二层的特征
         # rep_pos_li 前4个的特征维度 [batch_size,4,256,56,56],[batch_size,4,512,28,28],[batch_size,4,1024,14,14],[batch_size,4, 2048, 7, 7]
@@ -144,7 +240,63 @@ class LatentFeatureFuse(nn.Module):
 
         return layer4_to_out, out_features
 
+class SelfAttenFeatureFuse(nn.Module):
+    def __init__(self, num_attention_heads, hidden_size=256, hidden_dropout_prob=0):  # 0表示去除元素的概率
+        super(SelfAttenFeatureFuse, self).__init__()
+        # Global average pooling layer
+        self.ada_avgpool2d = nn.AdaptiveAvgPool2d((1, 1))
+        # attention模块
+        self.attentions = nn.ModuleList()
+        self.rep_lens = [256, 512, 1024, 2048]
+        for rep_len in self.rep_lens:
+            self.attentions.append(SelfAttention(num_attention_heads, rep_len, hidden_size, hidden_dropout_prob))
 
+        # 多层级特征融合模块
+        self.layer_attention_fcs = nn.ModuleList()
+        for i in range(len(self.rep_lens)):
+            input_size = hidden_size * 3  # 3件单品
+            output_size = hidden_size * 3
+            # print("input_size = {}, output_size = {}".format(input_size, output_size))
+            linear = nn.Linear(input_size, output_size)
+            fc = nn.Sequential(linear, nn.ReLU())
+            self.layer_attention_fcs.append(fc)
+
+    def forward(self, reps_pos, generator_id, outfit_num=4):
+        input_tensors = []
+        batch_size, item_num, _, _, _ = reps_pos[0].shape  # 获取每一层级特征的尺寸信息
+        for i in range(outfit_num):
+            # 将generator_id对应的张量与最后一件单品的张量进行交换，保证生成模型输入是连续在一起的
+            # 下面是in_place操作，反向传播会出错
+            # generator_item = reps_pos[i][:, generator_id, :, :, :]
+            # swap_item_id = 3
+            # swap_item = reps_pos[i][:, swap_item_id, :, :, :]
+            # reps_pos[i][:, generator_id, :, :, :] = swap_item
+            # reps_pos[i][:, swap_item_id, :, :, :] = generator_item
+            rep_li = reps_pos[i]
+            shape = rep_li.shape
+            rep_li = reps_pos[i]  # (batch_size, outfit_num, 256, 56, 56)
+            rep_li = rep_li.reshape(batch_size*outfit_num, shape[-3], shape[-2], shape[-1])
+            rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, outfit_num, -1)
+
+            input_feature = torch.cat((rep_li[:, :generator_id, :], rep_li[:, generator_id + 1:, :]), 1)  # (batch, 3 , 256)
+            input_tensors.append(input_feature)
+
+        layer_attention_out = []
+        for i in range(len(self.rep_lens)):
+            layer_i_output = self.attentions[i](input_tensors[i])  # 输出(batch, 3 x 256)
+            layer_attention_out.append(layer_i_output)
+
+        out0 = self.layer_attention_fcs[0](layer_attention_out[0]) + layer_attention_out[0]
+        layer1_cat_out0 = out0 + layer_attention_out[1]
+        out1 = self.layer_attention_fcs[1](layer1_cat_out0) + layer1_cat_out0
+
+        layer2_cat_out1 = out1 + layer_attention_out[2]
+        out2 = self.layer_attention_fcs[2](layer2_cat_out1) + layer2_cat_out1
+
+        layer3_cat_out2 = out2 + layer_attention_out[3]
+        out3 = self.layer_attention_fcs[3](layer3_cat_out2) + layer3_cat_out2  # 输出(batch, 3 x 256)
+
+        return out3, layer_attention_out  # out4 输出(batch, 3 x 256), layer_attention_out输出4个[batch, 3x256]
 #  高斯变化
 class Transformer(nn.Module):
     def __init__(self, input_size, output_size):
@@ -185,13 +337,13 @@ class SRResNetBlock(nn.Module):
 
 # 生成器模块
 class Generator(nn.Module):
-    def __init__(self, input_size, feature_output_size):
+    def __init__(self, input_size, feature_output_size, drop=0.5):
         super(Generator, self).__init__()
-        self.seq = nn.Sequential(  # 输入(batch_size, input_size), 输出(batch_size, 1024)
-            nn.Linear(input_size, 1024),
-            nn.BatchNorm1d(1024),
-            nn.ReLU()
-        )
+        # self.seq = nn.Sequential(  # 输入(batch_size, input_size), 输出(batch_size, 1024)
+        #     nn.Linear(input_size, 1024),
+        #     nn.BatchNorm1d(1024),
+        #     nn.ReLU()
+        # )
 
         self.deconv1 = nn.Sequential(
             # 输入(batch_size, 1024, 1, 1), 输出(batch_size, 512, 4, 4) , 计算方式参见 convtrans2D_output_size
@@ -208,6 +360,7 @@ class Generator(nn.Module):
             nn.AdaptiveAvgPool2d(1),  # (batch_size, 512, 1, 1)
             nn.Flatten(start_dim=1),
             nn.Linear(512, feature_output_size),
+            nn.Dropout(drop),
             nn.Sigmoid()
         )
 
@@ -227,6 +380,7 @@ class Generator(nn.Module):
             nn.Conv2d(in_channels=128, out_channels=16, kernel_size=1),  # (batch_size, 16, 14, 14)
             nn.Flatten(start_dim=1),
             nn.Linear(16*14*14, feature_output_size),
+            nn.Dropout(drop),
             nn.Sigmoid()
         )
         self.deconv3 = nn.Sequential(
@@ -245,6 +399,7 @@ class Generator(nn.Module):
             nn.Conv2d(in_channels=32, out_channels=1, kernel_size=1),  # (batch_size, 1, 56, 56)
             nn.Flatten(start_dim=1),
             nn.Linear(56*56, feature_output_size),
+            nn.Dropout(drop),
             nn.Sigmoid()
         )
         self.deconv4 = nn.Sequential(
@@ -262,6 +417,7 @@ class Generator(nn.Module):
             nn.Conv2d(in_channels=3, out_channels=1, kernel_size=1),  # (batch_size, 1, 56, 56)
             nn.Flatten(start_dim=1),
             nn.Linear(56*56, feature_output_size),
+            nn.Dropout(drop),
             nn.Sigmoid()
         )
         self.sigmoid = nn.Sigmoid()
@@ -289,7 +445,8 @@ class Generator(nn.Module):
 
     def forward(self, fuse_feature):
 
-        dec = self.seq(fuse_feature)  # [batch_size,1024]
+        # dec = self.seq(fuse_feature)  # [batch_size,1024]
+        dec = fuse_feature
         dec = torch.reshape(dec, (dec.shape[0], dec.shape[1], 1, 1))
 
         dec = self.deconv1(dec)
@@ -312,13 +469,14 @@ class LayerOut(nn.Module):
     输入单件单品在resnet模型输出的4层张量
     输出单件单品在resnet模型输出的4层张量，尺寸是[batch_size, feature_output_size]
     """
-    def __init__(self, feature_output_size):
+    def __init__(self, feature_output_size, drop=0.5):
         super(LayerOut, self).__init__()
         # 输入[batch_size,256,56,56], 输出[batch_size, feature_output_size]
         self.get_feature1 = nn.Sequential(
             nn.Conv2d(in_channels=256, out_channels=1, kernel_size=1),  # (batch_size, 1, 56, 56)
             nn.Flatten(start_dim=1),
             nn.Linear(56*56, feature_output_size),
+            nn.Dropout(drop),
             nn.Sigmoid()
         )
         # [batch_size, 512, 28, 28], 输出[batch_size, feature_output_size]
@@ -326,6 +484,7 @@ class LayerOut(nn.Module):
             nn.Conv2d(in_channels=512, out_channels=4, kernel_size=1),  # (batch_size, 4, 28, 28)
             nn.Flatten(start_dim=1),
             nn.Linear(4*28*28, feature_output_size),
+            nn.Dropout(drop),
             nn.Sigmoid()
         )
         # [batch_size, 1024, 14, 14], 输出[batch_size, feature_output_size]
@@ -333,6 +492,7 @@ class LayerOut(nn.Module):
             nn.Conv2d(in_channels=1024, out_channels=8, kernel_size=1),  # (batch_size, 8, 14, 14)
             nn.Flatten(start_dim=1),
             nn.Linear(8*14*14, feature_output_size),
+            nn.Dropout(drop),
             nn.Sigmoid()
         )
         # [batch_size, 2048, 7, 7], 输出[batch_size, feature_output_size]
@@ -340,6 +500,7 @@ class LayerOut(nn.Module):
             nn.Conv2d(in_channels=2048, out_channels=32, kernel_size=1),  # (batch_size, 32, 7, 7)
             nn.Flatten(start_dim=1),
             nn.Linear(32*7*7, feature_output_size),
+            nn.Dropout(drop),
             nn.Sigmoid()
         )
 
@@ -381,11 +542,12 @@ class MultiModuleGenerator(nn.Module):
         self.encoder = CompatModel(embed_size=embed_size, need_rep=need_rep, vocabulary=vocabulary, vse_off=vse_off,
                                    pe_off=pe_off, mlp_layers=mlp_layers, conv_feats=conv_feats)
         self.encoder.load_state_dict(torch.load(encoder_path))
-        self.latent_feature_fuse = LatentFeatureFuse()
-        self.transformer = Transformer(input_size=256, output_size=256)
-        self.generator = Generator(input_size=256*2, feature_output_size=256)
-        self.get_layer_out = LayerOut(feature_output_size=256)
-
+        # self.latent_feature_fuse = LatentFeatureFuse()
+        self.latent_feature_fuse = SelfAttenFeatureFuse(num_attention_heads=2, hidden_size=256, hidden_dropout_prob=0)
+        interactive_feature_size = 256*3  # 需要交互的特征尺寸
+        self.transformer = Transformer(input_size=interactive_feature_size, output_size=256)
+        self.generator = Generator(input_size=0, feature_output_size=interactive_feature_size)  # input_size已经无效
+        self.get_layer_out = LayerOut(feature_output_size=interactive_feature_size)
 
     # 返回一个列表，包含generator_id对应单品的每一层特征
     def get_layer_features(self, reps, generator_id):
@@ -454,13 +616,13 @@ class MultiModuleGenerator(nn.Module):
 
         # 输入图片特征融合模块
         # reps_pos是一个长度2为5的列表，shape是[5, batch_size*outfit_num, 256, 56, 56],但是只使用其中的前4个
-        # input_fuse_features, 尺寸是[batch_size, 256], out_features是tensor的列表, 尺寸是 [4, batch_size, 256]
+        # input_fuse_features, 尺寸是[batch_size, 256*3], out_features是tensor的列表, 尺寸是 [4, batch_size, 3x256]
         input_fuse_features, out_features = self.latent_feature_fuse(reps_pos[0:4], generator_id)
 
         z, z_mean, z_log_var = self.transformer(input_fuse_features, self.device)
 
         # 生成模块
-        generator_input = torch.cat((z, input_fuse_features), 1)  # generator_input : [16, 256*2]
+        generator_input = torch.cat((z, input_fuse_features), 1)  # generator_input : [16, 256 + 256*3 = 1024]
         low_resolution_img, high_resolution_img, generator_layer_features = self.generator(generator_input)
         # [batch_size, 3, 224,224], [batch_size, 3,224,224], generator_layer_features: [4, batch_size, 256]
 
