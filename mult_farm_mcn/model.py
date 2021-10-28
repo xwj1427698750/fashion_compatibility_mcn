@@ -184,6 +184,16 @@ class CompatModel(nn.Module):
         nn.init.xavier_uniform_(self.multi_layer_predictor.weight)
         nn.init.constant_(self.multi_layer_predictor.bias, 0)
 
+        # 额外的残差全连接层
+        self.layer_addtion_fcs = nn.ModuleList()
+        self.res_fc_layers = 3  #残差层数
+        fc_size = fcs_output_size[-1]
+        for i in range(self.res_fc_layers):
+            fc = nn.Sequential(
+                nn.Linear(fc_size, fc_size),
+                nn.ReLU()
+            )
+            self.layer_addtion_fcs.append(fc)
 
     def forward(self, images, names):
         """
@@ -334,7 +344,12 @@ class CompatModel(nn.Module):
         layer4_concat_layer3 = torch.cat((layer3_to_4, multi_scale_concats[3]), 1)
         layer4_to_out = self.layer_convs_fcs[3](layer4_concat_layer3) + layer3_to_4  # [16, 64]
 
-        fuse_feature = torch.cat((layer_wide_output, layer4_to_out), 1)  # [16, 64 + 68]
+        # 额外的残差全连接层
+        out1 = self.layer_addtion_fcs[0](layer4_to_out) + layer4_to_out
+        out2 = self.layer_addtion_fcs[1](out1) + out1
+        out3 = self.layer_addtion_fcs[2](out2) + out2
+
+        fuse_feature = torch.cat((layer_wide_output, out3), 1)  # [16, 64 + 68]
         out = self.multi_layer_predictor(fuse_feature)
         if activate:
             out = self.sigmoid(out)
