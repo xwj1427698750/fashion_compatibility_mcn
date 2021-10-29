@@ -236,7 +236,7 @@ class MultiModuleGenerator(nn.Module):
         self.encoder = cnn
         self.get_input_and_query = GetInputAndQuery()
         hidden_size = 256
-        self.get_attention_feature = SelfAttenFeatureFuse(num_attention_heads=2, hidden_size=hidden_size, hidden_dropout_prob=0.5)
+        self.get_attention_feature = SelfAttenFeatureFuse(num_attention_heads=1, hidden_size=hidden_size, hidden_dropout_prob=0.5)
         # # 层级attention的时候，增加了对query的映射
         # self.query_mapping = nn.ModuleList()
         # rep_lens = [256, 512, 1024, 2048]
@@ -363,7 +363,7 @@ class MultiModuleGenerator(nn.Module):
         wide_out = []
         for i in range(len(input_tensors)):
             score = torch.matmul(input_tensors[i], query_tensors[i].transpose(1, 2))  # (batch, 3,1)
-            wide_scores.append(score)
+            wide_scores.append(F.normalize(score, dim=1))
             wide_out.append(score.squeeze(2))  #(batch, 3,1)-->(16,3)
         wide_out = torch.cat(wide_out, 1)  # (batch, 3x4)
 
@@ -379,6 +379,7 @@ class MultiModuleGenerator(nn.Module):
         for i in range(len(layer_attention_fuse_list)):
             layer_attention_fuse_list[i] = layer_attention_fuse_list[i].reshape(batch_size, -1)
         deep_out = torch.cat(layer_attention_fuse_list, 1)  # (batch, 4*3*16)
+        deep_out = F.normalize(deep_out, dim=1)
         out = torch.cat((wide_out, deep_out), 1)
         out = self.predictor(out)
         return out, rep_last_2th
