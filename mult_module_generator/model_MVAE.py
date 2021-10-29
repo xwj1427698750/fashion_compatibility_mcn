@@ -237,16 +237,16 @@ class MultiModuleGenerator(nn.Module):
         self.get_input_and_query = GetInputAndQuery()
         hidden_size = 256
         self.get_attention_feature = SelfAttenFeatureFuse(num_attention_heads=2, hidden_size=hidden_size, hidden_dropout_prob=0.5)
-        # 层级attention的时候，增加了对query的映射
-        self.query_mapping = nn.ModuleList()
-        rep_lens = [256, 512, 1024, 2048]
-        for i in range(4):
-            fc = nn.Sequential(
-                nn.Linear(rep_lens[i], hidden_size),
-                nn.ReLU(),
-                LayerNorm(hidden_size),
-            )
-            self.query_mapping.append(fc)
+        # # 层级attention的时候，增加了对query的映射
+        # self.query_mapping = nn.ModuleList()
+        # rep_lens = [256, 512, 1024, 2048]
+        # for i in range(4):
+        #     fc = nn.Sequential(
+        #         nn.Linear(rep_lens[i], hidden_size),
+        #         nn.ReLU(),
+        #         LayerNorm(hidden_size),
+        #     )
+        #     self.query_mapping.append(fc)
         layer_fuse_out_size = 16
         self.get_layer_attention_fuse = SelfAttenFeatureFuse(num_attention_heads=2, hidden_size=layer_fuse_out_size, hidden_dropout_prob=0.5, rep_lens=[256, 256, 256, 256])
         self.predictor = nn.Sequential(
@@ -359,18 +359,20 @@ class MultiModuleGenerator(nn.Module):
         layer_attention_out = self.get_attention_feature(input_tensors)  # layer_attention_out输出4x(batch, 3, 256)
 
         # 计算wide部分， query对应的单品与input对应的3件单品的每一个层进行点积运算, 3x4 = 12
-        wide_scores = []
+        wide_scores = []  # 处理完后是4 (batch, 3,1)
+        wide_out = []
         for i in range(len(input_tensors)):
-            score = torch.matmul(input_tensors[i], query_tensors[i].transpose(1, 2)).squeeze(2)  # (batch, 3,1)-->(16,3)
+            score = torch.matmul(input_tensors[i], query_tensors[i].transpose(1, 2))  # (batch, 3,1)
             wide_scores.append(score)
-        wide_out = torch.cat(wide_scores, 1)  # (batch, 3x4)
+            wide_out.append(score.squeeze(2))  #(batch, 3,1)-->(16,3)
+        wide_out = torch.cat(wide_out, 1)  # (batch, 3x4)
 
         #  计算deep部分
         for i in range(len(layer_attention_out)):
             query_li = query_tensors[i]
-            query_li = self.query_mapping[i](query_li)  # 将query_li映射到与layer_attention_out[i]相同的维度
-            score = torch.matmul(layer_attention_out[i], query_li.transpose(1, 2))  # (batch, 3,1)  这里是否需要正则化一下？
-            layer_attention_out[i] = layer_attention_out[i] * score  # (batch, 3, 256) * (batch, 3, 1)
+            # query_li = self.query_mapping[i](query_li)  # 将query_li映射到与layer_attention_out[i]相同的维度
+            # score = torch.matmul(layer_attention_out[i], query_li.transpose(1, 2))  # (batch, 3,1)  这里是否需要正则化一下？
+            layer_attention_out[i] = layer_attention_out[i] * wide_scores[i]  # (batch, 3, 256) * (batch, 3, 1)
 
         # 计算层级attention
         layer_attention_fuse_list = self.get_layer_attention_fuse(layer_attention_out)  # (batch, 3, 16)
