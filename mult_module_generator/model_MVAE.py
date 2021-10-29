@@ -6,16 +6,8 @@ import torch.nn.utils.rnn as rnn_utils
 import math
 
 from model import CompatModel
+from resnet import resnet50
 
-def convtrans2D_output_size(img_size, padding, kernel_size, stride):
-    """
-    反卷积的输出的张量尺寸计算方式
-    img_size = [H, W]
-    """
-    # compute output shape of conv2D
-    outshape = ((img_size[0] - 1) * stride[0] - 2 * padding[0] + kernel_size[0],
-                (img_size[1] - 1) * stride[1] - 2 * padding[1] + kernel_size[1])
-    return outshape
 
 
 class LayerNorm(nn.Module):
@@ -35,7 +27,7 @@ class LayerNorm(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, num_attention_heads, input_size, hidden_size, hidden_dropout_prob):
+    def __init__(self, num_attention_heads, input_size, hidden_size, hidden_dropout_prob=0.5, attention_dropout_prob=0.5):
         super(SelfAttention, self).__init__()
         if hidden_size % num_attention_heads != 0:
             raise ValueError(
@@ -49,13 +41,13 @@ class SelfAttention(nn.Module):
         self.key = nn.Linear(input_size, self.all_head_size)
         self.value = nn.Linear(input_size, self.all_head_size)
 
-        # self.attn_dropout = nn.Dropout(attention_probs_dropout_prob)
+        self.attn_dropout = nn.Dropout(attention_dropout_prob)
 
         # 做完self-attention 做一个前馈全连接 LayerNorm 输出
         self.dense = nn.Linear(hidden_size, hidden_size)
         self.LayerNorm = LayerNorm(hidden_size, eps=1e-12)
         self.out_dropout = nn.Dropout(hidden_dropout_prob)
-        self.flatten = nn.Flatten()
+
 
     def transpose_for_scores(self, x):
         new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
@@ -65,6 +57,7 @@ class SelfAttention(nn.Module):
     def forward(self, input_tensor):
         """
         input_tensor's shape = (batch, n, input_size) = (batch_size, 3, 256|512|1024|2048)
+        输出# (batch,n, hidden_size) 输出的维度
         """
         # mixed_xxx_layer'shape = (batch, n, all_head_size)
         mixed_query_layer = self.query(input_tensor)
@@ -92,7 +85,7 @@ class SelfAttention(nn.Module):
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
 
-        # attention_probs = self.attn_dropout(attention_probs)
+        attention_probs = self.attn_dropout(attention_probs)
 
         # context_layer'shape = (batch,num_attention_heads,n,attention_head_size)
         # 这里是attention得分和value加权求得的均值
@@ -108,87 +101,25 @@ class SelfAttention(nn.Module):
         hidden_states = self.dense(context_layer)
         hidden_states = self.out_dropout(hidden_states)
         # hidden_states = self.LayerNorm(hidden_states + input_tensor)
-        hidden_states = self.LayerNorm(hidden_states)  # (batch,n, all_head_size) 输出的维度
-        out = self.flatten(hidden_states)  # 输出(batch, n x all_head_size)
-        return out
+        out = self.LayerNorm(hidden_states)
+        return out  # (batch,n, all_head_size) 输出的维度
 
 
-# 隐变量的特征融合模块
-class LatentFeatureFuse(nn.Module):
+
+class GetInputAndQuery(nn.Module):
     def __init__(self):
-        super(LatentFeatureFuse, self).__init__()
+        super(GetInputAndQuery, self).__init__()
         # Global average pooling layer
         self.ada_avgpool2d = nn.AdaptiveAvgPool2d((1, 1))
-        # 多尺度融合层每一层的卷积核
-        self.filter_sizes = [2, 3]
-        rep_weight = 6  # 输入套装单品的个数，正常是3，如果将套装复制然后拼接了一次，就可以得到8了
-        self.layer_convs = nn.ModuleList()  # 4 x 2 , 一共有4层, 每一层有2个卷积核 2x2, 3x3
-        self.layer_convs2 = nn.ModuleList()  # 4 x 2 , 一共有4层, 每一层有2个卷积核 2x2, 3x3
-        for i in range(4):  # resnet取4层出来
-            multi_convs = nn.ModuleList()
-            multi_convs2 = nn.ModuleList()
-            for size in self.filter_sizes:
-                conv_net = nn.Sequential(
-                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(1, size * size)),
-                    nn.BatchNorm2d(1),
-                    nn.LeakyReLU(),
-                    nn.AvgPool2d(kernel_size=(rep_weight - size + 1, rep_weight // 2 - size + 1)),
-                    nn.Flatten(),
-                )
-                multi_convs.append(conv_net)
-
-                conv_net2 = nn.Sequential(
-                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(1, size * size)),
-                    nn.BatchNorm2d(1),
-                    nn.ReLU(),
-                    nn.AvgPool2d(kernel_size=(rep_weight - size + 1, rep_weight // 2 - size + 1)),
-                    nn.Flatten(),
-                )
-                multi_convs2.append(conv_net2)
-
-            self.layer_convs.append(multi_convs)
-            self.layer_convs2.append(multi_convs2)
-
-        # 多层级融合模块
-        self.layer_convs_fcs = nn.ModuleList()
-        fashion_item_rep_len = [0, 256, 512, 1024, 2048]
-        fcs_output_size = [0, 64, 64, 64, 64]
-        for i in range(1, len(fashion_item_rep_len)):
-            rep_len = fashion_item_rep_len[i]
-            input_size = 0
-            for size in self.filter_sizes:
-                stride = size * size
-                wi = (rep_len - size) // stride + 1
-                hi = (rep_weight - size) + 1
-                # 卷积之后的池化操作, 对张量产生的影响
-                wi = wi // (rep_weight // 2 - size + 1)
-                hi = 1
-                input_size = input_size + hi * wi
-            input_size = input_size * 2 + fcs_output_size[i - 1]
-            output_size = fcs_output_size[i]
-            linear = nn.Linear(input_size, output_size)
-            nn.init.xavier_uniform_(linear.weight)
-            nn.init.constant_(linear.bias, 0)
-            multi_scale_fc = nn.Sequential(linear, nn.ReLU())
-            self.layer_convs_fcs.append(multi_scale_fc)
-
-        # 每一层返回一个特征
-        self.get_features = nn.ModuleList()
-        for i in range(1, len(fashion_item_rep_len)):
-            size = fashion_item_rep_len[i]
-            net = nn.Sequential(
-                nn.Linear(3*size, 256),
-                nn.Sigmoid()
-            )
-            self.get_features.append(net)
 
     def forward(self, reps_pos, generator_id, outfit_num=4):
         """
-        reps_pos是一个长度为4的列表，shape是[4, batch_size*outfit_num, 256, 56, 56]
+            输入是resnet每一层的输出:eg:(batch_size*outfit_num, 256, 56, 56)，分离input(3件单品)和query项(一件单品)每一层的特征
         """
-        batch_size, item_num, _, _, _ = reps_pos[0].shape  # 获取每一层级特征的尺寸信息
-        input_features = []
-        ground_truth_features = []
+        input_tensors = []
+        query_tensors = []
+        batch_item_num, _, _, _ = reps_pos[0].shape  # 获取每一层级特征的尺寸信息
+        batch_size = batch_item_num // outfit_num
         for i in range(outfit_num):
             # 将generator_id对应的张量与最后一件单品的张量进行交换，保证生成模型输入是连续在一起的
             # 下面是in_place操作，反向传播会出错
@@ -197,62 +128,45 @@ class LatentFeatureFuse(nn.Module):
             # swap_item = reps_pos[i][:, swap_item_id, :, :, :]
             # reps_pos[i][:, generator_id, :, :, :] = swap_item
             # reps_pos[i][:, swap_item_id, :, :, :] = generator_item
+
             rep_li = reps_pos[i]  # (batch_size*outfit_num, 256, 56, 56)
-            input_feature = torch.cat((rep_li[:, :generator_id, :, :, :], rep_li[:, generator_id+1:, :, :, :]), 1)
-            input_features.append(input_feature)
-            ground_truth_features.append(rep_li[:, generator_id, :, :, :])
-
-        # 多尺度融合模块
-        multi_scale_concats = []
-        out_features = []  # 最后结果是[4, 16, 256]
-        for i, rep_li in enumerate(input_features):
-            shape = rep_li.shape
-            rep_li = rep_li.reshape(batch_size*(outfit_num - 1), shape[-3], shape[-2], shape[-1])
-            rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, 1, outfit_num-1, -1)  # 这里是融合3件，也就是 outfit_num - 1
-            # rep_l1 (batch_size,1,3,256), rep_l2 (batch_size,1,3,512), rep_l3 (batch_size,1,3,1024), rep_l4 (batch_size,1,3,2048)
-            rep_li_double = torch.cat((rep_li, rep_li), 2)  # (batch_size,1,6,256), rep_l2 (batch_size,1,6,512), rep_l3 (batch_size,1,6,1024), rep_l4 (batch_size,1,6,2048)
-
-            multi_scale_li_feature = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_convs[i]]  # 2x2, 3x3,2个尺寸的卷积核作用后的结果
-            cat_feature = torch.cat(multi_scale_li_feature, 1)
-            # cat_feature [batch_size, (32 + 29)], [batch_size, (64 + 57)], [batch_size, (128 + 114)], [batch_size, (256 + 228)]
-
-            multi_scale_li_feature2 = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_convs2[i]]  # 2x2, 3x3, 2个尺寸的卷积核作用后的结果
-            cat_feature2 = torch.cat(multi_scale_li_feature2, 1)
-
-            cat_feature_fuse = torch.cat((cat_feature, cat_feature2), 1)
-            multi_scale_concats.append(cat_feature_fuse)  # [batch_size, (21 + 14)x2], [batch_size, (42 + 28)x2], [batch_size, (85 + 57)x2], [batch_size, (170 + 114)x2]
-
-            rep_li_flatten = rep_li.reshape((batch_size, -1))
-            out_features.append(self.get_features[i](rep_li_flatten))
-
-        # 多层级特征融合模块1
-        layer1_to_2 = self.layer_convs_fcs[0](multi_scale_concats[0])                # [batch_size, 64]
-        layer2_concat_layer1 = torch.cat((layer1_to_2, multi_scale_concats[1]), 1)
-        layer2_to_3 = self.layer_convs_fcs[1](layer2_concat_layer1) + layer1_to_2   # [batch_size, 64]
-        layer3_concat_layer2 = torch.cat((layer2_to_3, multi_scale_concats[2]), 1)
-        layer3_to_4 = self.layer_convs_fcs[2](layer3_concat_layer2) + layer2_to_3   # [batch_size, 64]
-        layer4_concat_layer3 = torch.cat((layer3_to_4, multi_scale_concats[3]), 1)
-        layer4_to_out = self.layer_convs_fcs[3](layer4_concat_layer3) + layer3_to_4 # [batch_size, 64]
-
-        rep_pos_l1, rep_pos_l2, rep_pos_l3, rep_pos_l4 = reps_pos  # 左侧的rep是倒数第二层的特征
-        # rep_pos_li 前4个的特征维度 [batch_size,4,256,56,56],[batch_size,4,512,28,28],[batch_size,4,1024,14,14],[batch_size,4, 2048, 7, 7]
-        # 其中(batch_size, generator_id, 4, _, _, _]对应的张量是不需要的
-
-        return layer4_to_out, out_features
+            rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, outfit_num, -1)  # avgpool2d的输入尺寸有要求只能是4个维度的，不能是
+            input_feature = torch.cat((rep_li[:, :generator_id, :], rep_li[:, generator_id + 1:, :]), 1)  # (batch, 3 , 256)
+            input_tensors.append(input_feature)
+            query_tensors.append(rep_li[:, generator_id, :].unsqueeze(1))  # a list of 4 tensors with shape (batch, 1 , 256)
+        return input_tensors, query_tensors  # input_tensors：a list of  4 tensors with shape (batch, 3 , 256)， query_tensors： a list of 4 tensors with shape (batch, 1 , 256)
 
 class SelfAttenFeatureFuse(nn.Module):
-    def __init__(self, num_attention_heads, hidden_size=256, hidden_dropout_prob=0):  # 0表示去除元素的概率
+    def __init__(self, num_attention_heads, hidden_size=256, hidden_dropout_prob=0, rep_lens=[256, 512, 1024, 2048]):
+        """
+        num_attention_heads：表示采用的多头注意力机制的数量
+        hidden_size： 单个时尚单品最终输出的维度
+        hidden_dropout_prob： nn.Drop()中的概率， 0表示去除元素的概率
+        rep_lens : forward函数中的input_tensors中单品的特征对应的维度列表
+        """
         super(SelfAttenFeatureFuse, self).__init__()
-        # Global average pooling layer
-        self.ada_avgpool2d = nn.AdaptiveAvgPool2d((1, 1))
         # attention模块
         self.attentions = nn.ModuleList()
-        self.rep_lens = [256, 512, 1024, 2048]
+        self.rep_lens = rep_lens
         for rep_len in self.rep_lens:
             self.attentions.append(SelfAttention(num_attention_heads, rep_len, hidden_size, hidden_dropout_prob))
 
+    def forward(self, input_tensors):
+        """
+        输出每一个层级经过attention加权之后的特征
+        """
+        layer_attention_out = []
+        for i in range(len(self.rep_lens)):
+            layer_i_output = self.attentions[i](input_tensors[i])  # 输出(batch, 3,hidden_size)
+            layer_attention_out.append(layer_i_output)
+        return layer_attention_out  # layer_attention_out输出4个[batch, 3, hidden_size]
+
+class multi_layer_fuse(nn.Module):
+    def __init__(self, hidden_size):
+        super(multi_layer_fuse, self).__init__()
         # 多层级特征融合模块
         self.layer_attention_fcs = nn.ModuleList()
+        self.flatten = nn.Flatten()
         for i in range(len(self.rep_lens)):
             input_size = hidden_size * 3  # 3件单品
             output_size = hidden_size * 3
@@ -261,30 +175,13 @@ class SelfAttenFeatureFuse(nn.Module):
             fc = nn.Sequential(linear, nn.ReLU())
             self.layer_attention_fcs.append(fc)
 
-    def forward(self, reps_pos, generator_id, outfit_num=4):
-        input_tensors = []
-        batch_size, item_num, _, _, _ = reps_pos[0].shape  # 获取每一层级特征的尺寸信息
-        for i in range(outfit_num):
-            # 将generator_id对应的张量与最后一件单品的张量进行交换，保证生成模型输入是连续在一起的
-            # 下面是in_place操作，反向传播会出错
-            # generator_item = reps_pos[i][:, generator_id, :, :, :]
-            # swap_item_id = 3
-            # swap_item = reps_pos[i][:, swap_item_id, :, :, :]
-            # reps_pos[i][:, generator_id, :, :, :] = swap_item
-            # reps_pos[i][:, swap_item_id, :, :, :] = generator_item
-            rep_li = reps_pos[i]
-            shape = rep_li.shape
-            rep_li = reps_pos[i]  # (batch_size, outfit_num, 256, 56, 56)
-            rep_li = rep_li.reshape(batch_size*outfit_num, shape[-3], shape[-2], shape[-1])
-            rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, outfit_num, -1)
-
-            input_feature = torch.cat((rep_li[:, :generator_id, :], rep_li[:, generator_id + 1:, :]), 1)  # (batch, 3 , 256)
-            input_tensors.append(input_feature)
-
-        layer_attention_out = []
-        for i in range(len(self.rep_lens)):
-            layer_i_output = self.attentions[i](input_tensors[i])  # 输出(batch, 3 x 256)
-            layer_attention_out.append(layer_i_output)
+    def forward(self, layer_attention_out):
+        """
+        layer_attention_out 每一个层级attention的后的特征, 4个[batch, 3, 256]
+        """
+        # 更改每一个层级特征的尺寸
+        for i in range(len(layer_attention_out)):
+            layer_attention_out[i] = self.flatten(layer_attention_out[i])
 
         out0 = self.layer_attention_fcs[0](layer_attention_out[0]) + layer_attention_out[0]
         layer1_cat_out0 = out0 + layer_attention_out[1]
@@ -295,233 +192,12 @@ class SelfAttenFeatureFuse(nn.Module):
 
         layer3_cat_out2 = out2 + layer_attention_out[3]
         out3 = self.layer_attention_fcs[3](layer3_cat_out2) + layer3_cat_out2  # 输出(batch, 3 x 256)
-
-        return out3, layer_attention_out  # out4 输出(batch, 3 x 256), layer_attention_out输出4个[batch, 3x256]
-#  高斯变化
-class Transformer(nn.Module):
-    def __init__(self, input_size, output_size):
-        super(Transformer, self).__init__()
-        self.fc1 = nn.Linear(input_size, output_size)
-        self.fc2 = nn.Linear(input_size, output_size)
-
-    def forward(self, fuse_feature, device):
-        """
-        fuse_feature :[batch_size, input_size(256]
-        """
-        z_mean = self.fc1(fuse_feature)
-        z_log_var = self.fc2(fuse_feature)
-        epsilon = torch.randn(size=z_mean.shape).to(device)
-        z = z_mean + torch.exp(0.5 * z_log_var) * epsilon
-        return z, z_mean, z_log_var
-
-
-class SRResNetBlock(nn.Module):
-    def __init__(self, in_channel, out_channel, same_shape=True):
-        super(SRResNetBlock, self).__init__()
-        self.same_shape = same_shape
-        stride = 1 if same_shape else 2
-        self.conv1 = nn.Conv2d(in_channels=in_channel, out_channels=out_channel, kernel_size=3, padding=1, stride=stride)
-        self.conv2 = nn.Conv2d(in_channels=in_channel, out_channels=out_channel, kernel_size=3, padding=1)
-        if not same_shape:
-            self.conv3 = nn.Conv2d(in_channels=in_channel, out_channels=out_channel, kernel_size=1, stride=stride)
-        self.bn1 = nn.BatchNorm2d(out_channel)
-        self.bn2 = nn.BatchNorm2d(out_channel)
-
-    def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        if not self.same_shape:
-            x = self.conv3(x)
-        return out+x
-
-
-# 生成器模块
-class Generator(nn.Module):
-    def __init__(self, input_size, feature_output_size, drop=0.5):
-        super(Generator, self).__init__()
-        # self.seq = nn.Sequential(  # 输入(batch_size, input_size), 输出(batch_size, 1024)
-        #     nn.Linear(input_size, 1024),
-        #     nn.BatchNorm1d(1024),
-        #     nn.ReLU()
-        # )
-
-        self.deconv1 = nn.Sequential(
-            # 输入(batch_size, 1024, 1, 1), 输出(batch_size, 512, 4, 4) , 计算方式参见 convtrans2D_output_size
-            nn.ConvTranspose2d(in_channels=1024, out_channels=512, kernel_size=4, stride=1, padding=0),
-            nn.BatchNorm2d(512),
-            nn.ReLU(),
-            # 输入(batch_size, 512, 4, 4), 输出(batch_size, 512, 8, 8)
-            nn.ConvTranspose2d(in_channels=512, out_channels=512, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU()
-        )
-        # 输出张量尺寸[batch_size, feature_output_size]
-        self.get_feature1 = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),  # (batch_size, 512, 1, 1)
-            nn.Flatten(start_dim=1),
-            nn.Linear(512, feature_output_size),
-            nn.Dropout(drop),
-            nn.Sigmoid()
-        )
-
-        self.deconv2 = nn.Sequential(
-            # 输入(batch_size, 512, 8, 8), 输出(batch_size, 256, 14, 14)
-            nn.ConvTranspose2d(in_channels=512, out_channels=256, kernel_size=2, stride=2, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-            # 输入(batch_size, 256, 14, 14), 输出(batch_size, 128, 28, 28)
-            nn.ConvTranspose2d(in_channels=256, out_channels=128, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-        )
-        # 输入(batch_size, 128, 28, 28), 输出张量尺寸[batch_size, feature_output_size]
-        self.get_feature2 = nn.Sequential(
-            nn.AvgPool2d(kernel_size=4, stride=2, padding=1),  # (batch_size, 128, 14, 14)
-            nn.Conv2d(in_channels=128, out_channels=16, kernel_size=1),  # (batch_size, 16, 14, 14)
-            nn.Flatten(start_dim=1),
-            nn.Linear(16*14*14, feature_output_size),
-            nn.Dropout(drop),
-            nn.Sigmoid()
-        )
-        self.deconv3 = nn.Sequential(
-            # 输入(batch_size, 128, 28, 28), 输出(batch_size, 64, 56, 56)
-            nn.ConvTranspose2d(in_channels=128, out_channels=64, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            # 输入(batch_size, 64, 56, 56), 输出(batch_size, 32, 112, 112)
-            nn.ConvTranspose2d(in_channels=64, out_channels=32, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-        )
-        # 输入(batch_size, 32, 112, 112)， 输出张量尺寸[batch_size, 256]
-        self.get_feature3 = nn.Sequential(
-            nn.AvgPool2d(kernel_size=4, stride=2, padding=1),  # (batch_size, 32, 56, 56)
-            nn.Conv2d(in_channels=32, out_channels=1, kernel_size=1),  # (batch_size, 1, 56, 56)
-            nn.Flatten(start_dim=1),
-            nn.Linear(56*56, feature_output_size),
-            nn.Dropout(drop),
-            nn.Sigmoid()
-        )
-        self.deconv4 = nn.Sequential(
-            # 输入(batch_size, 32, 112, 112), 输出(batch_size, 16, 224, 224)
-            nn.ConvTranspose2d(in_channels=32, out_channels=16, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(16),
-            nn.ReLU(),
-            # 输入(batch_size, 16, 224, 224), 输出(batch_size, 3, 224, 224)
-            nn.ConvTranspose2d(in_channels=16, out_channels=3, kernel_size=1, stride=1, padding=0),
-            nn.BatchNorm2d(3),
-        )
-        # 输入(batch_size, 3, 224, 224),输出张量尺寸[batch_size, 256]
-        self.get_feature4 = nn.Sequential(
-            nn.AvgPool2d(kernel_size=4, stride=4),  # (batch_size, 3, 56, 56)
-            nn.Conv2d(in_channels=3, out_channels=1, kernel_size=1),  # (batch_size, 1, 56, 56)
-            nn.Flatten(start_dim=1),
-            nn.Linear(56*56, feature_output_size),
-            nn.Dropout(drop),
-            nn.Sigmoid()
-        )
-        self.sigmoid = nn.Sigmoid()
-        # 输入是(batch_size, 3, 224, 224), 输出是(batch_size, 32, 224, 224)
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-        )
-        # 输入与输出都是(batch_size, 32, 224, 224)
-        self.conv2 = nn.Sequential(
-            SRResNetBlock(32, 32),
-            SRResNetBlock(32, 32),
-            SRResNetBlock(32, 32),
-            nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-        )
-        # 输入是(batch_size, 32, 224, 224), 输出是(batch_size, 3, 224, 224)
-        self.conv3 = nn.Sequential(
-            nn.ConvTranspose2d(in_channels=32, out_channels=3, kernel_size=1, stride=1, padding=0),
-            nn.BatchNorm2d(3),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, fuse_feature):
-
-        # dec = self.seq(fuse_feature)  # [batch_size,1024]
-        dec = fuse_feature
-        dec = torch.reshape(dec, (dec.shape[0], dec.shape[1], 1, 1))
-
-        dec = self.deconv1(dec)
-        feature1 = self.get_feature1(dec)
-        dec = self.deconv2(dec)
-        feature2 = self.get_feature2(dec)
-        dec = self.deconv3(dec)
-        feature3 = self.get_feature3(dec)
-        low_resolution_img = self.deconv4(dec)  # 低分辨率
-        feature4 = self.get_feature4(low_resolution_img)
-
-        low_to_mid = self.conv1(low_resolution_img)
-        mid_to_high = self.conv2(low_to_mid)
-        high_resolution_img = self.conv3(low_to_mid + mid_to_high)  # 高分辨率
-        return low_resolution_img, high_resolution_img, [feature1, feature2, feature3, feature4]  # features : [4, batch_size, 256]
-
-
-class LayerOut(nn.Module):
-    """
-    输入单件单品在resnet模型输出的4层张量
-    输出单件单品在resnet模型输出的4层张量，尺寸是[batch_size, feature_output_size]
-    """
-    def __init__(self, feature_output_size, drop=0.5):
-        super(LayerOut, self).__init__()
-        # 输入[batch_size,256,56,56], 输出[batch_size, feature_output_size]
-        self.get_feature1 = nn.Sequential(
-            nn.Conv2d(in_channels=256, out_channels=1, kernel_size=1),  # (batch_size, 1, 56, 56)
-            nn.Flatten(start_dim=1),
-            nn.Linear(56*56, feature_output_size),
-            nn.Dropout(drop),
-            nn.Sigmoid()
-        )
-        # [batch_size, 512, 28, 28], 输出[batch_size, feature_output_size]
-        self.get_feature2 = nn.Sequential(
-            nn.Conv2d(in_channels=512, out_channels=4, kernel_size=1),  # (batch_size, 4, 28, 28)
-            nn.Flatten(start_dim=1),
-            nn.Linear(4*28*28, feature_output_size),
-            nn.Dropout(drop),
-            nn.Sigmoid()
-        )
-        # [batch_size, 1024, 14, 14], 输出[batch_size, feature_output_size]
-        self.get_feature3 = nn.Sequential(
-            nn.Conv2d(in_channels=1024, out_channels=8, kernel_size=1),  # (batch_size, 8, 14, 14)
-            nn.Flatten(start_dim=1),
-            nn.Linear(8*14*14, feature_output_size),
-            nn.Dropout(drop),
-            nn.Sigmoid()
-        )
-        # [batch_size, 2048, 7, 7], 输出[batch_size, feature_output_size]
-        self.get_feature4 = nn.Sequential(
-            nn.Conv2d(in_channels=2048, out_channels=32, kernel_size=1),  # (batch_size, 32, 7, 7)
-            nn.Flatten(start_dim=1),
-            nn.Linear(32*7*7, feature_output_size),
-            nn.Dropout(drop),
-            nn.Sigmoid()
-        )
-
-    def forward(self, layer_reps):
-        """
-            layer_reps : [batch_size,1,256,56,56],[batch_size,1,512,28,28],[batch_size,1,1024,14,14],[batch_size,1, 2048, 7, 7]
-        """
-        batch_size, *other = layer_reps[0].shape
-        for i in range(len(layer_reps)):
-            shape = layer_reps[i].shape
-            layer_reps[i] = torch.reshape(layer_reps[i], (batch_size, shape[-3], shape[-2], shape[-1]))
-        feature1 = self.get_feature1(layer_reps[0])
-        feature2 = self.get_feature2(layer_reps[1])
-        feature3 = self.get_feature3(layer_reps[2])
-        feature4 = self.get_feature4(layer_reps[3])
-        return [feature1, feature2, feature3, feature4]
+        return out3  # out3 输出(batch, 3 x 256)
 
 
 class MultiModuleGenerator(nn.Module):
     def __init__(self, embed_size=1000, need_rep=True, vocabulary=None,
-                 vse_off=False, pe_off=False, mlp_layers=2, conv_feats="1234", encoder_path="model_mcn.pth", generator_type="upper", device=torch.device("cuda:0")):
+                 vse_off=False, pe_off=False, mlp_layers=2, conv_feats="1234", target_type="upper", device=torch.device("cuda:0")):
         """ The Multi-Module-Generator for fashion item generator.
         Args:
             embed_size: the output embedding size of the cnn model, default 1000.
@@ -536,18 +212,38 @@ class MultiModuleGenerator(nn.Module):
         """
         super(MultiModuleGenerator, self).__init__()
         self.type_to_id = {'upper': 0, 'bottom': 1, 'bag': 2, 'shoe': 3}
-        self.generator_type = generator_type
+        self.target_type = target_type
         self.device = device
+        self.conv_feats = conv_feats
+        self.vse_off = vse_off
+        self.need_rep = need_rep
+        # Semantic embedding model
+        self.sem_embedding = nn.Embedding(vocabulary, 1000)
+        # Visual embedding model
+        self.image_embedding = nn.Linear(2048, 1000)
 
-        self.encoder = CompatModel(embed_size=embed_size, need_rep=need_rep, vocabulary=vocabulary, vse_off=vse_off,
-                                   pe_off=pe_off, mlp_layers=mlp_layers, conv_feats=conv_feats)
-        self.encoder.load_state_dict(torch.load(encoder_path))
-        # self.latent_feature_fuse = LatentFeatureFuse()
-        self.latent_feature_fuse = SelfAttenFeatureFuse(num_attention_heads=2, hidden_size=256, hidden_dropout_prob=0)
-        interactive_feature_size = 256*3  # 需要交互的特征尺寸
-        self.transformer = Transformer(input_size=interactive_feature_size, output_size=256)
-        self.generator = Generator(input_size=0, feature_output_size=interactive_feature_size)  # input_size已经无效
-        self.get_layer_out = LayerOut(feature_output_size=interactive_feature_size)
+        cnn = resnet50(pretrained=True, need_rep=need_rep)
+        cnn.fc = nn.Linear(cnn.fc.in_features, embed_size)  # 更换原先resnet的最后一层
+        self.encoder = cnn
+        self.get_input_and_query = GetInputAndQuery()
+        hidden_size = 256
+        self.get_attention_feature = SelfAttenFeatureFuse(num_attention_heads=2, hidden_size=hidden_size, hidden_dropout_prob=0.5)
+        # 层级attention的时候，增加了对query的映射
+        self.query_mapping = nn.ModuleList()
+        rep_lens = [256, 512, 1024, 2048]
+        for i in range(4):
+            fc = nn.Sequential(
+                nn.Linear(rep_lens[i], hidden_size),
+                nn.ReLU(),
+                LayerNorm(hidden_size),
+            )
+            self.query_mapping.append(fc)
+        layer_fuse_out_size = 16
+        self.get_layer_attention_fuse = SelfAttenFeatureFuse(num_attention_heads=2, hidden_size=layer_fuse_out_size, hidden_dropout_prob=0.5, rep_lens=[256, 256, 256, 256])
+        self.predictor = nn.Sequential(
+            nn.Linear(3*4 + 4*3*layer_fuse_out_size, 1),
+            nn.Sigmoid()
+        )
 
     # 返回一个列表，包含generator_id对应单品的每一层特征
     def get_layer_features(self, reps, generator_id):
@@ -563,8 +259,7 @@ class MultiModuleGenerator(nn.Module):
         return layer_reps
 
     # 层级特征交互得分计算
-    def get_layer_feature_score(self, input_fuse_features, generator_layer_features, pos_layer_features,
-                                neg_layer_features):
+    def get_layer_feature_score(self, input_fuse_features, pos_layer_features, neg_layer_features):
         """
         pos_layer_features与input_fuse_features, generator_layer_features的交互得分大于(>)
         neg_layer_features与input_fuse_features, generator_layer_features
@@ -575,69 +270,115 @@ class MultiModuleGenerator(nn.Module):
         score_neg = torch.zeros(size=(batch_size, 1)).to(self.device)
         for layer_index in range(len(input_fuse_features)):
             score_pos = score_pos + torch.sum(input_fuse_features[layer_index] * pos_layer_features[layer_index], dim=1, keepdim=True)  # [batch_size, 1]
-            score_pos = score_pos + torch.sum(generator_layer_features[layer_index] * pos_layer_features[layer_index], dim=1, keepdim=True)  # [batch_size, 1]
-
             score_neg = score_neg + torch.sum(input_fuse_features[layer_index] * neg_layer_features[layer_index], dim=1, keepdim=True)  # [batch_size, 1]
-            score_neg = score_neg + torch.sum(generator_layer_features[layer_index] * neg_layer_features[layer_index], dim=1, keepdim=True)  # [batch_size, 1]
 
         difference_score = score_pos - score_neg
         return difference_score  # (batch_size, 1)
 
+    def _compute_vse_loss(self, names, rep):
+        """ Visual semantice loss which map both visual embedding and semantic embedding
+        into a common space.
+
+        Reference:
+        https://github.com/xthan/polyvore/blob/e0ca93b0671491564b4316982d4bfe7da17b6238/polyvore/polyvore_model_bi.py#L362
+        """
+        # Normalized Semantic Embedding
+        padded_names = rnn_utils.pad_sequence(names, batch_first=True).to(rep.device)
+        mask = torch.gt(padded_names, 0)
+        cap_mask = torch.ge(mask.sum(dim=1), 2)
+        semb = self.sem_embedding(padded_names)
+        semb = semb * (mask.unsqueeze(dim=2)).float()
+        word_lengths = mask.sum(dim=1)
+        word_lengths = torch.where(
+            word_lengths == 0,
+            (torch.ones(semb.shape[0]).float() * 0.1).to(rep.device),
+            word_lengths.float(),
+        )
+        semb = semb.sum(dim=1) / word_lengths.unsqueeze(dim=1)
+        semb = F.normalize(semb, dim=1)
+
+        # Normalized Visual Embedding
+        vemb = F.normalize(self.image_embedding(rep), dim=1)
+
+        # VSE Loss
+        semb = torch.masked_select(semb, cap_mask.unsqueeze(dim=1))
+        vemb = torch.masked_select(vemb, cap_mask.unsqueeze(dim=1))
+        semb = semb.reshape([-1, 1000])
+        vemb = vemb.reshape([-1, 1000])
+        scores = torch.matmul(semb, vemb.transpose(0, 1))
+        diagnoal = scores.diag().unsqueeze(dim=1)
+        cost_s = torch.clamp(0.2 - diagnoal + scores, min=0, max=1e6)  # 0.2 is margin
+        cost_im = torch.clamp(0.2 - diagnoal.transpose(0, 1) + scores, min=0, max=1e6)
+        cost_s = cost_s - torch.diag(cost_s.diag())
+        cost_im = cost_im - torch.diag(cost_im.diag())
+        vse_loss = cost_s.sum() + cost_im.sum()
+        vse_loss = vse_loss / (semb.shape[0] ** 2)
+
+        return vse_loss
+
+    def conpute_compatible_score(self, images):
+        """
+            Args:
+                images: Outfit images with shape (N, T, C, H, W)
+                names: Description words of each item in outfit
+
+            Return:
+                out: Compatibility score
+                vse_loss: Visual Semantic Loss
+            """
+        batch_size, item_num, _, _, img_size = images.shape
+        images = torch.reshape(images, (-1, 3, img_size, img_size))  # (batch_size*item_num->16*4, 3, 224, 224)
+        if self.need_rep:
+            features, *rep = self.encoder(images)
+            rep_l1, rep_l2, rep_l3, rep_l4, rep_last_2th = rep  # 左侧的rep是倒数第二层的特征
+            # [64,256,56,56],[64,512,28,28],[64,1024,14,14],[64, 2048, 7, 7]
+        else:
+            features = self.encoder(images)  # (batch_size * item_num -> 16*4, 1000)
+
+        rep_list = []
+        if "1" in self.conv_feats:
+            rep_list.append(rep_l1)
+        if "2" in self.conv_feats:
+            rep_list.append(rep_l2)
+        if "3" in self.conv_feats:
+            rep_list.append(rep_l3)
+        if "4" in self.conv_feats:
+            rep_list.append(rep_l4)
+
+        target_id = self.type_to_id[self.target_type]
+        input_tensors, query_tensors = self.get_input_and_query(rep_list, target_id)  # input_tensors 4x(batch, 3, 256), query_tensors 4x(batch, 1, 256)
+        layer_attention_out = self.get_attention_feature(input_tensors)  # layer_attention_out输出4x(batch, 3, 256)
+
+        # 计算wide部分， query对应的单品与input对应的3件单品的每一个层进行点积运算, 3x4 = 12
+        wide_scores = []
+        for i in range(len(input_tensors)):
+            score = torch.matmul(input_tensors[i], query_tensors[i].transpose(1, 2)).squeeze(2)  # (batch, 3,1)-->(16,3)
+            wide_scores.append(score)
+        wide_out = torch.cat(wide_scores, 1)  # (batch, 3x4)
+
+        #  计算deep部分
+        for i in range(len(layer_attention_out)):
+            query_li = query_tensors[i]
+            query_li = self.query_mapping[i](query_li)  # 将query_li映射到与layer_attention_out[i]相同的维度
+            score = torch.matmul(layer_attention_out[i], query_li.transpose(1, 2))  # (batch, 3,1)  这里是否需要正则化一下？
+            layer_attention_out[i] = layer_attention_out[i] * score  # (batch, 3, 256) * (batch, 3, 1)
+
+        # 计算层级attention
+        layer_attention_fuse_list = self.get_layer_attention_fuse(layer_attention_out)  # (batch, 3, 16)
+        for i in range(len(layer_attention_fuse_list)):
+            layer_attention_fuse_list[i] = layer_attention_fuse_list[i].reshape(batch_size, -1)
+        deep_out = torch.cat(layer_attention_fuse_list, 1)  # (batch, 4*3*16)
+        out = torch.cat((wide_out, deep_out), 1)
+        out = self.predictor(out)
+        return out, rep_last_2th
+
     def forward(self, images, names):
-        """
-        Args:
-            images: Outfit images with shape (N, T, C, H, W)
-            names: Description words of each item in outfit
-
-        Return:
-            out: Compatibility score
-            vse_loss: Visual Semantic Loss
-            tmasks_loss: mask loss to encourage a sparse mask
-            features_loss: regularize the feature vector to be normal
-        """
-        batch_size, item_num, _, _, img_size = images.shape  # (8, 5, 3, 224, 224) item_num = 5,有4个正的,1个负的
-
-        outfit_pos = images[:, :4, :, :, :]  # 正样本 (8, 4, 3, 224, 224)
-
-        image_neg = images[:, 4:5, :, :, :]  # 负样本 (8, 1, 3, 224, 224)
-        generator_id = self.type_to_id[self.generator_type]
-        outfit_neg = torch.cat((images[:, :generator_id, :, :, :], image_neg, images[:, generator_id+1: 4, :, :, :]), dim=1)
-
-        # 获得正负套装搭配的概率
-        # reps_pos包含5层的特征，rep_l1, rep_l2, rep_l3, rep_l4, rep_last_2th
-        # [batch_size*outfit_num,256,56,56],[batch_size*outfit_num,512,28,28],[batch_size*outfit_num,1024,14,14],[batch_size*outfit_num, 2048, 7, 7]，_, 我们用到了前面4个
-        out_pos, features_pos, _, _, reps_pos = self.encoder._compute_feature_fusion_score(outfit_pos)
-        out_neg, features_neg, _, _, reps_neg = self.encoder._compute_feature_fusion_score(outfit_neg)
-
-        for i in range(4):
-            shape = reps_pos[i].shape
-            reps_pos[i] = torch.reshape(reps_pos[i], (batch_size, item_num-1, -1, shape[-2], shape[-1]))
-            reps_neg[i] = torch.reshape(reps_neg[i], (batch_size, item_num-1, -1, shape[-2], shape[-1]))
-
-        # 输入图片特征融合模块
-        # reps_pos是一个长度2为5的列表，shape是[5, batch_size*outfit_num, 256, 56, 56],但是只使用其中的前4个
-        # input_fuse_features, 尺寸是[batch_size, 256*3], out_features是tensor的列表, 尺寸是 [4, batch_size, 3x256]
-        input_fuse_features, out_features = self.latent_feature_fuse(reps_pos[0:4], generator_id)
-
-        z, z_mean, z_log_var = self.transformer(input_fuse_features, self.device)
-
-        # 生成模块
-        generator_input = torch.cat((z, input_fuse_features), 1)  # generator_input : [16, 256 + 256*3 = 1024]
-        low_resolution_img, high_resolution_img, generator_layer_features = self.generator(generator_input)
-        # [batch_size, 3, 224,224], [batch_size, 3,224,224], generator_layer_features: [4, batch_size, 256]
-
-        # 获得正负单品的多层级特征表示
-        neg_layer_reps = self.get_layer_features(reps_neg, generator_id)
-        pos_layer_reps = self.get_layer_features(reps_pos, generator_id)
-
-        neg_layer_out = self.get_layer_out(neg_layer_reps)
-        pos_layer_out = self.get_layer_out(pos_layer_reps)
-
-        # 正样本与负样本的层级特征交互得分差 difference_score (batch_size, 1)
-        difference_score = self.get_layer_feature_score(out_features, generator_layer_features, pos_layer_out, neg_layer_out)
-
-        return out_pos, out_neg, low_resolution_img, high_resolution_img, difference_score, z_mean, z_log_var
-
+        out_prob, rep = self.conpute_compatible_score(images)
+        if self.vse_off:
+            vse_loss = torch.tensor(0.)
+        else:
+            vse_loss = self._compute_vse_loss(names, rep)
+        return out_prob, vse_loss
 
 if __name__ == "__main__":
 

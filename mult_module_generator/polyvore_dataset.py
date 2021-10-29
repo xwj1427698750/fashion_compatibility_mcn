@@ -29,7 +29,7 @@ class CategoryDataset(Dataset):
     """
     def __init__(self, root_dir="../data/images2/",  # images2对应的原始文件目录在/home/ices/xwj/graduation project/dataset/img/img_types/total/
                  data_file='train.json',
-                 data_dir="../data", transform=None, use_mean_img=True, neg_samples=True, generator_type="upper"):
+                 data_dir="../data", transform=None, use_mean_img=True, neg_samples=True, target_type="upper"):
         self.root_dir = root_dir
         self.data_dir = data_dir
         self.transform = transform
@@ -37,7 +37,10 @@ class CategoryDataset(Dataset):
         self.data = json.load(open(os.path.join(data_dir, data_file)))
         self.data = [(k, v) for k, v in self.data.items()]  # k:套装id,v:{套装对象}
         self.neg_samples = neg_samples  # if True, will randomly generate negative outfit samples
-        self.generator_type = generator_type
+
+        self.target_type = target_type
+        self.fashion_item_type = {'upper': 0, 'bottom': 1, 'bag': 2, 'shoe': 3}
+
         self.vocabulary, self.word_to_idx = [], {}
         self.word_to_idx['UNK'] = len(self.word_to_idx)
         self.vocabulary.append('UNK')
@@ -51,7 +54,9 @@ class CategoryDataset(Dataset):
     def __getitem__(self, index):
         """返回一套正样本数据以及指定类型的负样本，一共 4 + 1 件单品，前4件为正，后1件为负 """
         set_id, parts = self.data[index]
-        category = list(parts.keys())  # ['upper', 'bottom', 'bag', 'shoe']
+        to_change = False
+        if random.randint(0, 1) and self.neg_samples:  # random.randint(0, 1) 随机生成0和1
+            to_change = True  # random choose negative items
         imgs = []
         labels = []
         names = []
@@ -64,18 +69,22 @@ class CategoryDataset(Dataset):
             img = self.transform(img)
             imgs.append(img)
         # 负样本的生成方式： 根据给定的套装生成指定类型的负样本
-        choice = random.choice(self.data)
-        while choice[0] == set_id:
+        is_compat = 1
+        if to_change:
+            is_compat = 0
+            target_index = self.fashion_item_type.get(self.target_type)
             choice = random.choice(self.data)
-        img_path = os.path.join(self.root_dir, str(choice[1][self.generator_type]['index'])+'.jpg')
-        names.append(torch.LongTensor(self.str_to_idx(choice[1][self.generator_type]['name'])))
-        labels.append('{}_{}_{}'.format(choice[0], self.generator_type, choice[1][self.generator_type]['index']))
-        img = Image.open(img_path).convert('RGB')
-        img = self.transform(img)
-        imgs.append(img)
-        input_images = torch.stack(imgs)  # 沿着第0维度拼接图片 [N,C,H,W], N = len(imgs), [5, 3, 224, 224]
+            while choice[0] == set_id:
+                choice = random.choice(self.data)
+            img_path = os.path.join(self.root_dir, str(choice[1][self.target_type]['index'])+'.jpg')
+            names[target_index] = torch.LongTensor(self.str_to_idx(choice[1][self.target_type]['name']))
+            labels[target_index] = '{}_{}_{}'.format(choice[0], self.target_type, choice[1][self.target_type]['index'])
+            img = Image.open(img_path).convert('RGB')
+            img = self.transform(img)
+            imgs[target_index] = img
+        input_images = torch.stack(imgs)  # 沿着第0维度拼接图片 [N,C,H,W], N = len(imgs), [4, 3, 224, 224]
 
-        return input_images, names, set_id, labels
+        return input_images, names, set_id, labels, is_compat
 
     def __len__(self):
         return len(self.data)
@@ -95,8 +104,7 @@ class CategoryDataset(Dataset):
             expect original composition get highest score
         """
         set_id, parts = self.data[index]  # set_id：套装id, parts:套装的组成部分的描述
-        # question_part = random.choice(list(parts))  # list(parts)获得parts中的keys形成的列表，然后从中随机选择一个， eg:  question_part：upper
-        question_part = self.generator_type  # 选择的都是预先设定好的类别
+        question_part = self.target_type  # 选择的都是预先设定好的类别
         question_id = "{}_{}".format(set_id, parts[question_part]['index'])  # eg:  parts[question_part]['index'] : be9627e0c2e43ee96017e288b03eed96(图片的编号)
         imgs = []
         labels = []
@@ -130,11 +138,12 @@ class CategoryDataset(Dataset):
 def collate_fn(data):
     """Need custom a collate_fn"""
     # data.sort(key=lambda x: x[0].shape[0], reverse=True)
-    images, names, set_id, labels = zip(*data)
+    images, names, set_id, labels, is_compat = zip(*data)
     lengths = [i.shape[0] for i in images]
     names = sum(names, [])
+    is_compat = torch.LongTensor(is_compat)
     images = torch.stack(images)
-    return (lengths, images, names, set_id, labels)
+    return (lengths, images, names, set_id, labels, is_compat)
 
 def lstm_collate_fn(data):
     """Need custom a collate_fn for LSTM DataLoader
