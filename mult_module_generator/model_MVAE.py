@@ -37,9 +37,18 @@ class SelfAttention(nn.Module):
         self.attention_head_size = hidden_size // num_attention_heads
         self.all_head_size = hidden_size
 
-        self.query = nn.Linear(input_size, self.all_head_size)
-        self.key = nn.Linear(input_size, self.all_head_size)
-        self.value = nn.Linear(input_size, self.all_head_size)
+        self.query = nn.Sequential(
+            nn.Linear(input_size, self.all_head_size),
+            nn.ReLU(),
+        )
+        self.key = nn.Sequential(
+            nn.Linear(input_size, self.all_head_size),
+            nn.ReLU(),
+        )
+        self.value = nn.Sequential(
+            nn.Linear(input_size, self.all_head_size),
+            nn.ReLU(),
+        )
 
         self.attn_dropout = nn.Dropout(attention_dropout_prob)
 

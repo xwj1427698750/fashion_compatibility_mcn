@@ -56,8 +56,8 @@ def train(model, device, train_loader, val_loader, comment):
     target_id = type_to_id[target_type]
     model = model.to(device)
     criterion = nn.BCELoss()
-    optimizer = torch.optim.Adagrad(model.parameters(), lr=1e-3)
-    scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    # scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
     saver = BestSaver(comment)
     epochs = 50
 
@@ -104,7 +104,7 @@ def train(model, device, train_loader, val_loader, comment):
                         epoch, epochs, batch_num, clf_losses.val, vse_losses.val, total_losses.val
                     )
                 )
-        scheduler.step()
+        # scheduler.step()
         logging.info("Train Loss (total_loss): {:.4f}".format(total_losses.avg))
 
         # Valid Phase 验证fitb，取结果好的
