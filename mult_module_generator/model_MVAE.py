@@ -263,7 +263,7 @@ class MultiModuleGenerator(nn.Module):
         # self.layer_norms2 = nn.ModuleList()
         # for i in range(len(rep_lens)):
         #     self.layer_norms2.append(LayerNorm(hidden_size))
-        layer_fuse_out_size = 16
+        layer_fuse_out_size = 32
         self.get_layer_attention_fuse = SelfAttenFeatureFuse(num_attention_heads=1, input_size=hidden_size, hidden_size=layer_fuse_out_size, hidden_dropout_prob=0.5)
         self.predictor = nn.Sequential(
             nn.Linear(3*4 + 4*3*layer_fuse_out_size, 1),
@@ -402,10 +402,10 @@ class MultiModuleGenerator(nn.Module):
             layer_attention_out[i] = layer_attention_out[i] * wide_scores[i]  # (batch, 3, 256) * (batch, 3, 1)
 
         # 计算层级attention
-        layer_attention_fuse_list = self.get_layer_attention_fuse(layer_attention_out)  # (batch, 3, 16)
+        layer_attention_fuse_list = self.get_layer_attention_fuse(layer_attention_out)  # (batch, 3, 32)
         for i in range(len(layer_attention_fuse_list)):
             layer_attention_fuse_list[i] = layer_attention_fuse_list[i].reshape(batch_size, -1)
-        deep_out = torch.cat(layer_attention_fuse_list, 1)  # (batch, 4*3*16)
+        deep_out = torch.cat(layer_attention_fuse_list, 1)  # (batch, 4*3*32)
         deep_out = F.normalize(deep_out, dim=1)
         out = torch.cat((wide_out, deep_out), 1)
         out = self.predictor(out)

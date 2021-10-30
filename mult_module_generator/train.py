@@ -56,7 +56,7 @@ def train(model, device, train_loader, val_loader, comment):
     target_id = type_to_id[target_type]
     model = model.to(device)
     criterion = nn.BCELoss()
-    optimizer = torch.optim.Adagrad(model.parameters())
+    optimizer = torch.optim.Adam(model.parameters())
     # scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
     saver = BestSaver(comment)
     epochs = 50
