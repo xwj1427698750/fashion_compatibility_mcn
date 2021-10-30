@@ -248,9 +248,9 @@ class MultiModuleGenerator(nn.Module):
         #     )
         #     self.query_mapping.append(fc)
         layer_fuse_out_size = 16
-        self.get_layer_attention_fuse = SelfAttenFeatureFuse(num_attention_heads=2, hidden_size=layer_fuse_out_size, hidden_dropout_prob=0.5, rep_lens=[256, 256, 256, 256])
+        self.get_layer_attention_fuse = SelfAttenFeatureFuse(num_attention_heads=1, hidden_size=layer_fuse_out_size, hidden_dropout_prob=0.5, rep_lens=[256, 256, 256, 256])
         self.predictor = nn.Sequential(
-            nn.Linear(4*3*layer_fuse_out_size, 1),
+            nn.Linear(3*4 + 4*3*layer_fuse_out_size, 1),
             nn.Sigmoid()
         )
 
@@ -361,11 +361,12 @@ class MultiModuleGenerator(nn.Module):
         # 计算wide部分， query对应的单品与input对应的3件单品的每一个层进行点积运算, 3x4 = 12
         wide_scores = []  # 处理完后是4 (batch, 3,1)
         wide_out = []
+        wide_param = 0.1  # 减轻wide输出对结果的影响
         for i in range(len(input_tensors)):
             score = torch.matmul(input_tensors[i], query_tensors[i].transpose(1, 2))  # (batch, 3,1)
             wide_scores.append(F.normalize(score, dim=1))
             wide_out.append(score.squeeze(2))  #(batch, 3,1)-->(16,3)
-        wide_out = torch.cat(wide_out, 1)  # (batch, 3x4)
+        wide_out = torch.cat(wide_out, 1) * wide_param  # (batch, 3x4)
 
         #  计算deep部分
         for i in range(len(layer_attention_out)):
@@ -380,8 +381,7 @@ class MultiModuleGenerator(nn.Module):
             layer_attention_fuse_list[i] = layer_attention_fuse_list[i].reshape(batch_size, -1)
         deep_out = torch.cat(layer_attention_fuse_list, 1)  # (batch, 4*3*16)
         deep_out = F.normalize(deep_out, dim=1)
-        # out = torch.cat((wide_out, deep_out), 1)
-        out = deep_out
+        out = torch.cat((wide_out, deep_out), 1)
         out = self.predictor(out)
         return out, rep_last_2th
 
