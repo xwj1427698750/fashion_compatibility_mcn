@@ -250,7 +250,7 @@ class MultiModuleGenerator(nn.Module):
         layer_fuse_out_size = 16
         self.get_layer_attention_fuse = SelfAttenFeatureFuse(num_attention_heads=2, hidden_size=layer_fuse_out_size, hidden_dropout_prob=0.5, rep_lens=[256, 256, 256, 256])
         self.predictor = nn.Sequential(
-            nn.Linear(3*4 + 4*3*layer_fuse_out_size, 1),
+            nn.Linear(4*3*layer_fuse_out_size, 1),
             nn.Sigmoid()
         )
 
@@ -380,7 +380,8 @@ class MultiModuleGenerator(nn.Module):
             layer_attention_fuse_list[i] = layer_attention_fuse_list[i].reshape(batch_size, -1)
         deep_out = torch.cat(layer_attention_fuse_list, 1)  # (batch, 4*3*16)
         deep_out = F.normalize(deep_out, dim=1)
-        out = torch.cat((wide_out, deep_out), 1)
+        # out = torch.cat((wide_out, deep_out), 1)
+        out = deep_out
         out = self.predictor(out)
         return out, rep_last_2th
 
