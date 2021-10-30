@@ -18,7 +18,7 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--model_path', type=str, default="./model_train_wi_deep_2_atten_(all_head_num_1)_norm_wide_pram001.pth")
+parser.add_argument('--model_path', type=str, default="./model_train_wi_deep_2_atten_(all_head_num_1)_norm_wide_pram01_mfb.pth")
 parser.add_argument('--target_type', type=str, default="bottom")
 args = parser.parse_args()
 

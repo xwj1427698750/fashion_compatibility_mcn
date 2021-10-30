@@ -206,7 +206,7 @@ class multi_layer_fuse(nn.Module):
 
 class MultiModuleGenerator(nn.Module):
     def __init__(self, embed_size=1000, need_rep=True, vocabulary=None,
-                 vse_off=False, pe_off=False, mlp_layers=2, conv_feats="1234", target_type="upper", device=torch.device("cuda:0")):
+                 vse_off=False, pe_off=False, mlp_layers=2, conv_feats="1234", target_type="upper", device=torch.device("cuda:0"), mfb_drop=0.5):
         """ The Multi-Module-Generator for fashion item generator.
         Args:
             embed_size: the output embedding size of the cnn model, default 1000.
@@ -237,16 +237,17 @@ class MultiModuleGenerator(nn.Module):
         self.get_input_and_query = GetInputAndQuery()
         hidden_size = 256
         self.get_attention_feature = SelfAttenFeatureFuse(num_attention_heads=1, hidden_size=hidden_size, hidden_dropout_prob=0.5)
-        # # 层级attention的时候，增加了对query的映射
-        # self.query_mapping = nn.ModuleList()
-        # rep_lens = [256, 512, 1024, 2048]
-        # for i in range(4):
-        #     fc = nn.Sequential(
-        #         nn.Linear(rep_lens[i], hidden_size),
-        #         nn.ReLU(),
-        #         LayerNorm(hidden_size),
-        #     )
-        #     self.query_mapping.append(fc)
+        # 层级attention的时候，增加了对query的映射
+        self.query_mapping = nn.ModuleList()
+        rep_lens = [256, 512, 1024, 2048]
+        for i in range(4):
+            fc = nn.Sequential(
+                nn.Linear(rep_lens[i], hidden_size),
+            )
+            self.query_mapping.append(fc)
+        # MFB模块
+        self.mfb_drop = nn.Dropout(mfb_drop)
+        self.layer_norm = LayerNorm(hidden_size)
         layer_fuse_out_size = 16
         self.get_layer_attention_fuse = SelfAttenFeatureFuse(num_attention_heads=1, hidden_size=layer_fuse_out_size, hidden_dropout_prob=0.5, rep_lens=[256, 256, 256, 256])
         self.predictor = nn.Sequential(
@@ -368,12 +369,17 @@ class MultiModuleGenerator(nn.Module):
             wide_out.append(score.squeeze(2))  #(batch, 3,1)-->(16,3)
         wide_out = torch.cat(wide_out, 1) * wide_param  # (batch, 3x4)
 
-        #  计算deep部分
+        #  计算deep部分 + MFB模块
         for i in range(len(layer_attention_out)):
             query_li = query_tensors[i]
-            # query_li = self.query_mapping[i](query_li)  # 将query_li映射到与layer_attention_out[i]相同的维度
+            query_li = self.query_mapping[i](query_li)  # 将query_li映射到与layer_attention_out[i]相同的维度 # (batch, 1, 256)
             # score = torch.matmul(layer_attention_out[i], query_li.transpose(1, 2))  # (batch, 3,1)  这里是否需要正则化一下？
-            layer_attention_out[i] = layer_attention_out[i] * wide_scores[i]  # (batch, 3, 256) * (batch, 3, 1)
+            # mfb模块
+            layer_attention_out[i] = torch.mul(layer_attention_out[i], query_li)
+            layer_attention_out[i] = self.mfb_drop(layer_attention_out[i])
+            layer_attention_out[i] = torch.sqrt(F.relu(layer_attention_out[i])) - torch.sqrt(F.relu(-layer_attention_out[i]))
+            layer_attention_out[i] = self.layer_norm(layer_attention_out[i])
+            # layer_attention_out[i] = layer_attention_out[i] * wide_scores[i]  # (batch, 3, 256) * (batch, 3, 1)
 
         # 计算层级attention
         layer_attention_fuse_list = self.get_layer_attention_fuse(layer_attention_out)  # (batch, 3, 16)

@@ -21,7 +21,7 @@ parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
 parser.add_argument('--target_type', type=str, default="bottom")
-parser.add_argument('--comment', type=str, default="wi_deep_2_atten_(all_head_num_1)_norm_wide_pram001")
+parser.add_argument('--comment', type=str, default="wi_deep_2_atten_(all_head_num_1)_norm_wide_pram01_mfb")
 parser.add_argument('--clip', type=int, default=5)
 args = parser.parse_args()
 
@@ -56,7 +56,8 @@ def train(model, device, train_loader, val_loader, comment):
     target_id = type_to_id[target_type]
     model = model.to(device)
     criterion = nn.BCELoss()
-    optimizer = torch.optim.Adagrad(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adadelta(model.parameters())
+    # optimizer = torch.optim.Adagrad(model.parameters(), lr=1e-3)
     # scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
     saver = BestSaver(comment)
     epochs = 50
