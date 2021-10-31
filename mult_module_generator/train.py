@@ -21,7 +21,7 @@ parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
 parser.add_argument('--target_type', type=str, default="bottom")
-parser.add_argument('--comment', type=str, default="wi_deep_2_atten_(all_head_num_1)_norm_wide_pram01_mfb_wide_fc")
+parser.add_argument('--comment', type=str, default="wi_deep_multi_task")
 parser.add_argument('--clip', type=int, default=5)
 args = parser.parse_args()
 
@@ -60,38 +60,48 @@ def train(model, device, train_loader, val_loader, comment):
     # scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
     saver = BestSaver(comment)
     epochs = 50
-
+    log_sigmoid = nn.LogSigmoid()
     for epoch in range(1, epochs + 1):
         logging.info("Train Phase, Epoch: {}".format(epoch))
 
         total_losses = AverageMeter()
         clf_losses = AverageMeter()
         vse_losses = AverageMeter()
+        bpr_losses = AverageMeter()
         # Train phase
         model.train()
         for batch_num, batch in enumerate(train_loader, 1):
-            lengths, images, names, set_id, labels, is_compat = batch
+            lengths, images, names, set_id, labels = batch
             # print(labels)
             # print("is_compat", is_compat)
-            batch_size, _, _, _, img_size = images.shape  # [16, 4, 3, 224, 224]
+            batch_size, _, _, _, img_size = images.shape  # [16, 5, 3, 224, 224]
             images = images.to(device)
             # labels 显示样本的组成 单独的项为(set_id)_(index:单张照片的名字),  ['21027552963e099f780f73a5ffde30ed_be9627e0c2e43ee96017e288b03eed96', ..], length = batch_size
             # images.shape [8, 5, 3, 224, 224], [batch_size, item_length, C, H, W ]
             # names is a list with length 40 = 8 * 5, each item of which is a tensor 1-dim like:tensor([772,  68,  72, 208])
             # Forward   前向训练只需要 图像和文本数据
-            output, vse_loss = model(images, names)
+            pos_out, neg_out, diff, vse_loss = model(images, names)
             # BCE loss
-            target = is_compat.float().to(device)
-            output = output.squeeze(dim=1)
+            pos_target = torch.ones(batch_size)
+            pos_out = pos_out.squeeze(dim=1)
+            neg_target = torch.zeros(batch_size)
+            neg_out = neg_out.squeeze(dim=1)
+            output = torch.cat((pos_out, neg_out))
+            target = torch.cat((pos_target, neg_target)).to(device)
             clf_loss = criterion(output, target)
 
+            # bpr_loss
+            bpr_param = 1
+            bpr_loss = bpr_param * torch.sum(-log_sigmoid(diff))
+
             # sum all the loss
-            total_loss = clf_loss + vse_loss
+            total_loss = clf_loss + vse_loss + bpr_loss
 
             # Update Recoder
             total_losses.update(total_loss.item(), images.shape[0])
             clf_losses.update(clf_loss.item(), images.shape[0])
             vse_losses.update(vse_loss.item(), images.shape[0])
+            bpr_losses.update(bpr_loss.item(), 1)
 
             # Backpropagation
             optimizer.zero_grad()
@@ -100,8 +110,8 @@ def train(model, device, train_loader, val_loader, comment):
             optimizer.step()
             if batch_num % 50 == 0:
                 logging.info(
-                    "[{}/{}] #{} clf_loss: {:.4f}, vse_loss: {:.4f},total_loss:{:.4f}".format(
-                        epoch, epochs, batch_num, clf_losses.val, vse_losses.val, total_losses.val
+                    "[{}/{}] #{} clf_loss: {:.4f}, bpr_loss: {:.4f}, vse_loss: {:.4f},total_loss:{:.4f}".format(
+                        epoch, epochs, batch_num, clf_losses.val, bpr_losses.val, vse_losses.val, total_losses.val
                     )
                 )
         # scheduler.step()
@@ -111,20 +121,35 @@ def train(model, device, train_loader, val_loader, comment):
         logging.info("Valid Phase, Epoch: {}".format(epoch))
         model.eval()
         clf_losses = AverageMeter()
+        bpr_losses = AverageMeter()
+        clf_diff_acc = AverageMeter()
         outputs = []
         targets = []
         for batch_num, batch in enumerate(val_loader, 1):
-            lengths, images, names, set_id, labels, is_compat = batch
+            lengths, images, names, set_id, labels = batch
             images = images.to(device)
-            target = is_compat.float().to(device)
             with torch.no_grad():
-                output, _ = model.conpute_compatible_score(images)
-                output = output.squeeze(dim=1)
+                pos_out, neg_out, diff, _ = model.conpute_compatible_score(images)
+                # clf_loss
+                batch_size, _, _, _, img_size = images.shape  # [16, 5, 3, 224, 224]
+                pos_target = torch.ones(batch_size)
+                pos_out = pos_out.squeeze(dim=1)
+                neg_target = torch.zeros(batch_size)
+                neg_out = neg_out.squeeze(dim=1)
+                output = torch.cat((pos_out, neg_out))
+                target = torch.cat((pos_target, neg_target)).to(device)
                 clf_loss = criterion(output, target)
+                # bpr_loss
+                bpr_param = 1
+                bpr_loss = bpr_param * torch.sum(log_sigmoid(diff))
+                diff = diff.squeeze(dim=1)
+                diff_sum = torch.sum((diff > 0).float())
+            clf_diff_acc.update(diff_sum.item(), images.shape[0])
             clf_losses.update(clf_loss.item(), images.shape[0])
+            bpr_losses.update(bpr_loss.item(), images.shape[0])
             outputs.append(output)
             targets.append(target)
-        logging.info("Valid Loss (clf_loss): {:.4f}".format(clf_losses.avg))
+        logging.info("Valid Loss (clf_loss): {:.4f} bpr_loss{:.4f} clf_diff_acc{:.4f}".format(clf_losses.avg, bpr_losses.avg, clf_diff_acc.avg))
         outputs = torch.cat(outputs).cpu().data.numpy()
         targets = torch.cat(targets).cpu().data.numpy()
         auc = metrics.roc_auc_score(targets, outputs)
@@ -137,7 +162,7 @@ def train(model, device, train_loader, val_loader, comment):
         positive_acc = sum(outputs[targets==1]>0.5) / len(outputs)
         logging.info("Positive accuracy: {:.4f}".format(positive_acc))
         # Save best model
-        saver.save(auc, accuracy, model.state_dict(), epoch)
+        saver.save(auc, clf_diff_acc.avg, model.state_dict(), epoch)
         logging.info("Best AUC is : {:.4f} Best_epoch is {}".format(saver.best_auc, saver.best_auc_epoch))  # 输出已经选择好的最佳模型
         logging.info("Best ACC is : {:.4f} Best_epoch is {}".format(saver.best_acc, saver.best_acc_epoch))  # 输出已经选择好的最佳模型
         logging.info("Best ACC(AUC) is : {:.4f} Best_epoch is {}".format(saver.best_acc_auc, saver.best_acc_auc_epoch))  # 输出已经选择好的最佳模型

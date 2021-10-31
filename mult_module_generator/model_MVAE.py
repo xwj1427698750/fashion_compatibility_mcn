@@ -122,12 +122,13 @@ class GetInputAndQuery(nn.Module):
 
     def forward(self, reps_pos, generator_id, outfit_num=4):
         """
-            输入是resnet每一层的输出:eg:(batch_size*outfit_num, 256, 56, 56)，分离input(3件单品)和query项(一件单品)每一层的特征
+            输入是resnet每一层的输出eg:(batch_size*outfit_num, 256, 56, 56)，分离input(3件单品)和query项(1件正,1件负)每一层的特征
         """
         input_tensors = []
-        query_tensors = []
+        pos_query_tensors = []
+        neg_query_tensors = []
         batch_item_num, _, _, _ = reps_pos[0].shape  # 获取每一层级特征的尺寸信息
-        batch_size = batch_item_num // outfit_num
+        batch_size = batch_item_num // (outfit_num + 1)
         for i in range(outfit_num):
             # 将generator_id对应的张量与最后一件单品的张量进行交换，保证生成模型输入是连续在一起的
             # 下面是in_place操作，反向传播会出错
@@ -137,13 +138,14 @@ class GetInputAndQuery(nn.Module):
             # reps_pos[i][:, generator_id, :, :, :] = swap_item
             # reps_pos[i][:, swap_item_id, :, :, :] = generator_item
 
-            rep_li = reps_pos[i]  # (batch_size*outfit_num, 256, 56, 56)
-            rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, outfit_num, -1)  # avgpool2d的输入尺寸有要求只能是4个维度的，不能是
-            input_feature = torch.cat((rep_li[:, :generator_id, :], rep_li[:, generator_id + 1:, :]), 1)  # (batch, 3 , 256)
+            rep_li = reps_pos[i]  # (batch_size*(outfit_num+1), 256, 56, 56)
+            rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, outfit_num + 1, -1)  # avgpool2d的输入尺寸有要求只能是4个维度的
+            input_feature = torch.cat((rep_li[:, :generator_id, :], rep_li[:, generator_id + 1:outfit_num, :]), 1)  # (batch, 3 , 256)
             input_tensors.append(input_feature)
-            query_tensors.append(rep_li[:, generator_id, :].unsqueeze(1))  # a list of 4 tensors with shape (batch, 1 , 256)
+            pos_query_tensors.append(rep_li[:, generator_id, :].unsqueeze(1))  # a list of 4 tensors with shape (batch, 1 , 256)
+            neg_query_tensors.append(rep_li[:, outfit_num, :].unsqueeze(1))    # a list of 4 tensors with shape (batch, 1 , 256) 最后一件事负样本
             # input_tensors：a list of  4 tensors with shape (batch, 3, 256/512/1024/2048), query_tensors： a list of 4 tensors with shape (batch, 1, 256/512/1024/2048)
-        return input_tensors, query_tensors
+        return input_tensors, pos_query_tensors, neg_query_tensors
 
 class SelfAttenFeatureFuse(nn.Module):
     def __init__(self, num_attention_heads, input_size=256, hidden_size=256, hidden_dropout_prob=0, rep_lens=[256, 512, 1024, 2048]):
@@ -352,11 +354,11 @@ class MultiModuleGenerator(nn.Module):
                 vse_loss: Visual Semantic Loss
             """
         batch_size, item_num, _, _, img_size = images.shape
-        images = torch.reshape(images, (-1, 3, img_size, img_size))  # (batch_size*item_num->16*4, 3, 224, 224)
+        images = torch.reshape(images, (-1, 3, img_size, img_size))  # (batch_size*item_num->16*5, 3, 224, 224)
         if self.need_rep:
             features, *rep = self.encoder(images)
             rep_l1, rep_l2, rep_l3, rep_l4, rep_last_2th = rep  # 左侧的rep是倒数第二层的特征
-            # [64,256,56,56],[64,512,28,28],[64,1024,14,14],[64, 2048, 7, 7]
+            # [batch_size*item_num,256,56,56],[..,512,28,28],[.., 1024,14,14],[.., 2048, 7, 7]
         else:
             features = self.encoder(images)  # (batch_size * item_num -> 16*4, 1000)
 
@@ -371,53 +373,90 @@ class MultiModuleGenerator(nn.Module):
             rep_list.append(rep_l4)
 
         target_id = self.type_to_id[self.target_type]
-        input_tensors, query_tensors = self.get_input_and_query(rep_list, target_id)  # input_tensors 4x(batch, 3, 256|512|...), query_tensors 4x(batch, 1, 256|512|...)
+        input_tensors, pos_query_tensors, neg_query_tensors = self.get_input_and_query(rep_list, target_id)  # input_tensors 4x(batch, 3, 256|512|...), query_tensors 4x(batch, 1, 256|512|...)
 
 
         # 计算wide部分， query对应的单品与input对应的3件单品的每一个层进行点积运算, 3x4 = 12
-        wide_scores = []  # 处理完后是4 (batch, 3,1)
-        wide_out = []
+        pos_wide_scores = []  # 处理完后是4 (batch, 3,1)
+        pos_wide_out = []
+        neg_wide_scores = []  # 处理完后是4 (batch, 3,1)
+        neg_wide_out = []
         wide_param = 0.1  # 减轻wide输出对结果的影响
         for i in range(len(input_tensors)):
             # 增加了一层额外的空间映射
-            query_li = self.query_mapping[i](query_tensors[i])
             input_li = self.input_mapping[i](input_tensors[i])
-            score = torch.matmul(input_li, query_li.transpose(1, 2))  # (batch, 3,1)
-            wide_scores.append(F.normalize(score, dim=1))
-            wide_out.append(score.squeeze(2))  #(batch, 3,1)-->(16,3)
-        wide_out = torch.cat(wide_out, 1) * wide_param  # (batch, 3x4)
+
+            # pos部分
+            pos_query_li = self.query_mapping[i](pos_query_tensors[i])
+            pos_score = torch.matmul(input_li, pos_query_li.transpose(1, 2))  # (batch, 3,1)
+            pos_wide_scores.append(F.normalize(pos_score, dim=1))
+            pos_wide_out.append(pos_score.squeeze(2))  # (batch, 3,1)-->(16,3)
+
+            # neg部分
+            neg_query_li = self.query_mapping[i](neg_query_tensors[i])
+            neg_score = torch.matmul(input_li, neg_query_li.transpose(1, 2))  # (batch, 3,1)
+            neg_wide_scores.append(F.normalize(neg_score, dim=1))
+            neg_wide_out.append(neg_score.squeeze(2))  # (batch, 3,1)-->(16,3)
+
+        pos_wide_out = torch.cat(pos_wide_out, 1) * wide_param  # (batch, 3x4)
+        neg_wide_out = torch.cat(neg_wide_out, 1) * wide_param  # (batch, 3x4)
 
         #  计算deep部分 + MFB模块
-        input_mfb_tensors = []
+        input_pos_mfb_tensors = []
+        input_neg_mfb_tensors = []
         for i in range(len(input_tensors)):
-            query_li = self.query_mapping[i](query_tensors[i])
             input_li = self.input_mapping[i](input_tensors[i])
-            input_li = torch.mul(input_li, query_li)
-            input_li = self.mfb_drop(input_li)
-            input_li = torch.sqrt(F.relu(input_li)) - torch.sqrt(F.relu(-input_li))
-            input_mfb_tensors.append(self.layer_norms[i](input_li))
-        layer_attention_out = self.get_attention_feature(input_mfb_tensors)  # layer_attention_out输出4x(batch, 3, 256)
 
-        for i in range(len(layer_attention_out)):
-            layer_attention_out[i] = layer_attention_out[i] * wide_scores[i]  # (batch, 3, 256) * (batch, 3, 1)
+            pos_query_li = self.query_mapping[i](pos_query_tensors[i])
+            pos_mix_li = torch.mul(input_li, pos_query_li)
+            pos_mix_li = self.mfb_drop(pos_mix_li)
+            pos_mix_li = torch.sqrt(F.relu(pos_mix_li)) - torch.sqrt(F.relu(-pos_mix_li))
+            input_pos_mfb_tensors.append(self.layer_norms[i](pos_mix_li))
 
-        # 计算层级attention
-        layer_attention_fuse_list = self.get_layer_attention_fuse(layer_attention_out)  # (batch, 3, 32)
-        for i in range(len(layer_attention_fuse_list)):
-            layer_attention_fuse_list[i] = layer_attention_fuse_list[i].reshape(batch_size, -1)
-        deep_out = torch.cat(layer_attention_fuse_list, 1)  # (batch, 4*3*32)
-        deep_out = F.normalize(deep_out, dim=1)
-        out = torch.cat((wide_out, deep_out), 1)
-        out = self.predictor(out)
-        return out, rep_last_2th
+            neg_query_li = self.query_mapping[i](neg_query_tensors[i])
+            neg_mix_li = torch.mul(input_li, neg_query_li)
+            neg_mix_li = self.mfb_drop(neg_mix_li)
+            neg_mix_li = torch.sqrt(F.relu(neg_mix_li)) - torch.sqrt(F.relu(-neg_mix_li))
+            input_neg_mfb_tensors.append(self.layer_norms[i](neg_mix_li))
+
+        pos_layer_attention_out = self.get_attention_feature(input_pos_mfb_tensors)  # layer_attention_out输出4x(batch, 3, 256)
+        neg_layer_attention_out = self.get_attention_feature(input_neg_mfb_tensors)  # layer_attention_out输出4x(batch, 3, 256)
+
+        for i in range(len(pos_layer_attention_out)):
+            pos_layer_attention_out[i] = pos_layer_attention_out[i] * pos_wide_scores[i]  # (batch, 3, 256) * (batch, 3, 1)
+            neg_layer_attention_out[i] = neg_layer_attention_out[i] * neg_wide_scores[i]  # (batch, 3, 256) * (batch, 3, 1)
+
+        # 计算层级attention的概率输出
+        pos_layer_attention_fuse_list = self.get_layer_attention_fuse(pos_layer_attention_out)  # (batch, 3, 32)
+        for i in range(len(pos_layer_attention_fuse_list)):
+            pos_layer_attention_fuse_list[i] = pos_layer_attention_fuse_list[i].reshape(batch_size, -1)
+        deep_pos_out = torch.cat(pos_layer_attention_fuse_list, 1)  # (batch, 4*3*32)
+        deep_pos_out = F.normalize(deep_pos_out, dim=1)
+        pos_out = torch.cat((pos_wide_out, deep_pos_out), 1)
+        pos_out = self.predictor(pos_out)
+
+        neg_layer_attention_fuse_list = self.get_layer_attention_fuse(neg_layer_attention_out)  # (batch, 3, 32)
+        for i in range(len(neg_layer_attention_fuse_list)):
+            neg_layer_attention_fuse_list[i] = neg_layer_attention_fuse_list[i].reshape(batch_size, -1)
+        deep_neg_out = torch.cat(neg_layer_attention_fuse_list, 1)  # (batch, 4*3*32)
+        deep_neg_out = F.normalize(deep_neg_out, dim=1)
+        neg_out = torch.cat((neg_wide_out, deep_neg_out), 1)
+        neg_out = self.predictor(neg_out)
+
+        pos_sum = torch.sum(pos_wide_out, dim=1, keepdim=True)
+        neg_sum = torch.sum(neg_wide_out, dim=1, keepdim=True)
+        square = torch.square(deep_pos_out-deep_neg_out)
+        diff = pos_sum - neg_sum + torch.mean(square, dim=1, keepdim=True)  # log_sigmoid是针对每一个样本做的，所以这里需要根据batch区分shape
+
+        return pos_out, neg_out, diff, rep_last_2th
 
     def forward(self, images, names):
-        out_prob, rep = self.conpute_compatible_score(images)
+        pos_out, neg_out, diff, rep_last_2th = self.conpute_compatible_score(images)
         if self.vse_off:
             vse_loss = torch.tensor(0.)
         else:
-            vse_loss = self._compute_vse_loss(names, rep)
-        return out_prob, vse_loss
+            vse_loss = self._compute_vse_loss(names, rep_last_2th)
+        return pos_out, neg_out, diff, vse_loss
 
 if __name__ == "__main__":
 
