@@ -101,7 +101,7 @@ def train(model, device, train_loader, val_loader, comment):
             total_losses.update(total_loss.item(), images.shape[0])
             clf_losses.update(clf_loss.item(), images.shape[0])
             vse_losses.update(vse_loss.item(), images.shape[0])
-            bpr_losses.update(bpr_loss.item(), 1)
+            bpr_losses.update(bpr_loss.item(), images.shape[0])
 
             # Backpropagation
             optimizer.zero_grad()
@@ -131,25 +131,26 @@ def train(model, device, train_loader, val_loader, comment):
             with torch.no_grad():
                 pos_out, neg_out, diff, _ = model.conpute_compatible_score(images)
                 # clf_loss
-                batch_size, _, _, _, img_size = images.shape  # [16, 5, 3, 224, 224]
-                pos_target = torch.ones(batch_size)
-                pos_out = pos_out.squeeze(dim=1)
-                neg_target = torch.zeros(batch_size)
-                neg_out = neg_out.squeeze(dim=1)
-                output = torch.cat((pos_out, neg_out))
-                target = torch.cat((pos_target, neg_target)).to(device)
-                clf_loss = criterion(output, target)
-                # bpr_loss
-                bpr_param = 1
-                bpr_loss = bpr_param * torch.sum(log_sigmoid(diff))
-                diff = diff.squeeze(dim=1)
-                diff_sum = torch.sum((diff > 0).float())
+            batch_size, _, _, _, img_size = images.shape  # [16, 5, 3, 224, 224]
+            pos_target = torch.ones(batch_size)
+            pos_out = pos_out.squeeze(dim=1)
+            neg_target = torch.zeros(batch_size)
+            neg_out = neg_out.squeeze(dim=1)
+            output = torch.cat((pos_out, neg_out))
+            target = torch.cat((pos_target, neg_target)).to(device)
+            clf_loss = criterion(output, target)
+            # bpr_loss
+            bpr_param = 1
+            bpr_loss = bpr_param * torch.sum(-log_sigmoid(diff))
+            # diff score
+            diff = diff.squeeze(dim=1)
+            diff_sum = torch.sum((diff > 0).float())
             clf_diff_acc.update(diff_sum.item(), images.shape[0])
             clf_losses.update(clf_loss.item(), images.shape[0])
             bpr_losses.update(bpr_loss.item(), images.shape[0])
             outputs.append(output)
             targets.append(target)
-        logging.info("Valid Loss (clf_loss): {:.4f} bpr_loss{:.4f} clf_diff_acc{:.4f}".format(clf_losses.avg, bpr_losses.avg, clf_diff_acc.avg))
+        logging.info("Valid Loss clf_diff_acc : {:.4f}  (clf_loss): {:.4f} bpr_loss : {:.4f} ".format(clf_diff_acc.avg, clf_losses.avg, bpr_losses.avg))
         outputs = torch.cat(outputs).cpu().data.numpy()
         targets = torch.cat(targets).cpu().data.numpy()
         auc = metrics.roc_auc_score(targets, outputs)

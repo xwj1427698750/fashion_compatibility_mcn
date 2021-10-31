@@ -271,6 +271,10 @@ class MultiModuleGenerator(nn.Module):
             nn.Linear(3*4 + 4*3*layer_fuse_out_size, 1),
             nn.Sigmoid()
         )
+        # 用于获取正样本和负样本的得分
+        self.get_compat_score = nn.Sequential(
+            nn.Linear(4*3*layer_fuse_out_size, 1)
+        )
 
     # 返回一个列表，包含generator_id对应单品的每一层特征
     def get_layer_features(self, reps, generator_id):
@@ -445,9 +449,11 @@ class MultiModuleGenerator(nn.Module):
 
         pos_sum = torch.sum(pos_wide_out, dim=1, keepdim=True)
         neg_sum = torch.sum(neg_wide_out, dim=1, keepdim=True)
-        square = torch.square(deep_pos_out-deep_neg_out)
-        diff = pos_sum - neg_sum + torch.mean(square, dim=1, keepdim=True)  # log_sigmoid是针对每一个样本做的，所以这里需要根据batch区分shape
-
+        # square = torch.square(deep_pos_out-deep_neg_out)
+        # diff = pos_sum - neg_sum + torch.mean(square, dim=1, keepdim=True)  # log_sigmoid是针对每一个样本做的，所以这里需要根据batch区分shape
+        pos_compat_score = self.get_compat_score(deep_pos_out)
+        neg_compat_score = self.get_compat_score(deep_neg_out)
+        diff = pos_sum - neg_sum + pos_compat_score - neg_compat_score
         return pos_out, neg_out, diff, rep_last_2th
 
     def forward(self, images, names):
