@@ -16,7 +16,7 @@ from utils import AverageMeter, BestSaver, config_logging, prepare_dataloaders
 # Leave a comment for this training, and it will be used for name suffix of log and saved model
 import argparse
 parser = argparse.ArgumentParser(description='Fashion Compatibility Training.')
-parser.add_argument('--vse_off', action="store_true")
+parser.add_argument('--vse_off', action="store_false")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
@@ -56,7 +56,8 @@ def train(model, device, train_loader, val_loader, comment):
     target_id = type_to_id[target_type]
     model = model.to(device)
     criterion = nn.BCELoss()
-    optimizer = torch.optim.Adam(model.parameters())
+    # optimizer = torch.optim.Adagrad(model.parameters())
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-3, momentum=0.9)
     # scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
     saver = BestSaver(comment)
     epochs = 50

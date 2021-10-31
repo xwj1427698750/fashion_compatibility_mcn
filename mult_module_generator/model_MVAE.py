@@ -36,16 +36,25 @@ class SelfAttention(nn.Module):
         self.num_attention_heads = num_attention_heads
         self.attention_head_size = hidden_size // num_attention_heads
         self.all_head_size = hidden_size
+        query_linear = nn.Linear(input_size, self.all_head_size)
+        nn.init.xavier_uniform_(query_linear.weight)
+        nn.init.constant_(query_linear.bias, 0)
         self.query = nn.Sequential(
-            nn.Linear(input_size, self.all_head_size),
+            query_linear,
             nn.ReLU(),
         )
+        key_linear = nn.Linear(input_size, self.all_head_size)
+        nn.init.xavier_uniform_(key_linear.weight)
+        nn.init.constant_(key_linear.bias, 0)
         self.key = nn.Sequential(
-            nn.Linear(input_size, self.all_head_size),
+            key_linear,
             nn.ReLU(),
         )
+        value_linear = nn.Linear(input_size, self.all_head_size)
+        nn.init.xavier_uniform_(value_linear.weight)
+        nn.init.constant_(value_linear.bias, 0)
         self.value = nn.Sequential(
-            nn.Linear(input_size, self.all_head_size),
+            value_linear,
             nn.ReLU(),
         )
 
@@ -53,6 +62,8 @@ class SelfAttention(nn.Module):
 
         # 做完self-attention 做一个前馈全连接 LayerNorm 输出
         self.dense = nn.Linear(hidden_size, hidden_size)
+        nn.init.xavier_uniform_(self.dense.weight)
+        nn.init.constant_(self.dense.bias, 0)
         self.LayerNorm = LayerNorm(hidden_size, eps=1e-12)
         self.out_dropout = nn.Dropout(hidden_dropout_prob)
 
@@ -183,6 +194,8 @@ class multi_layer_fuse(nn.Module):
             output_size = hidden_size * 3
             # print("input_size = {}, output_size = {}".format(input_size, output_size))
             linear = nn.Linear(input_size, output_size)
+            nn.init.xavier_uniform_(linear.weight)
+            nn.init.constant_(linear.bias, 0)
             fc = nn.Sequential(linear, nn.ReLU())
             self.layer_attention_fcs.append(fc)
 
@@ -243,16 +256,22 @@ class MultiModuleGenerator(nn.Module):
         self.query_mapping = nn.ModuleList()
         rep_lens = [256, 512, 1024, 2048]
         for i in range(4):
+            fc_linear = nn.Linear(rep_lens[i], hidden_size)
+            nn.init.xavier_uniform_(fc_linear.weight)
+            nn.init.constant_(fc_linear.bias, 0)
             fc = nn.Sequential(
-                nn.Linear(rep_lens[i], hidden_size),
+                fc_linear,
                 nn.ReLU(),
             )
             self.query_mapping.append(fc)
         self.input_mapping = nn.ModuleList()
         # 层级attention的时候，增加了对input的映射
         for i in range(4):
+            fc_linear = nn.Linear(rep_lens[i], hidden_size)
+            nn.init.xavier_uniform_(fc_linear.weight)
+            nn.init.constant_(fc_linear.bias, 0)
             fc = nn.Sequential(
-                nn.Linear(rep_lens[i], hidden_size),
+                fc_linear,
                 nn.ReLU(),
             )
             self.input_mapping.append(fc)
@@ -267,13 +286,17 @@ class MultiModuleGenerator(nn.Module):
         #     self.layer_norms2.append(LayerNorm(hidden_size))
         layer_fuse_out_size = 32
         self.get_layer_attention_fuse = SelfAttenFeatureFuse(num_attention_heads=1, input_size=hidden_size, hidden_size=layer_fuse_out_size, hidden_dropout_prob=0.5)
+        predictor_linear = nn.Linear(3*4 + 4*3*layer_fuse_out_size, 1)
         self.predictor = nn.Sequential(
-            nn.Linear(3*4 + 4*3*layer_fuse_out_size, 1),
+            predictor_linear,
             nn.Sigmoid()
         )
         # 用于获取正样本和负样本的得分
+        score_linear = nn.Linear(4*3*layer_fuse_out_size, 1)
+        nn.init.xavier_uniform_(score_linear.weight)
+        nn.init.constant_(score_linear.bias, 0)
         self.get_compat_score = nn.Sequential(
-            nn.Linear(4*3*layer_fuse_out_size, 1)
+            score_linear,
         )
 
     # 返回一个列表，包含generator_id对应单品的每一层特征
