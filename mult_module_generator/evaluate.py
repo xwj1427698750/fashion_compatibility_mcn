@@ -81,25 +81,17 @@ for epoch in range(test_num):
         bpr_losses.update(bpr_loss.item(), images.shape[0])
         outputs.append(output)
         targets.append(target)
-    outputs = torch.cat(outputs).cpu().data.numpy()
-    targets = torch.cat(targets).cpu().data.numpy()
-    logging.info("clf_diff_acc@0.5: {:.4f}".format(clf_diff_acc.avg))
-    auc = metrics.roc_auc_score(targets, outputs)
-    logging.info("AUC: {:.4f}".format(auc))
-    predicts = np.where(outputs > 0.5, 1, 0)
-    accuracy = metrics.accuracy_score(predicts, targets)
-    logging.info("Accuracy@0.5: {:.4f}".format(accuracy))
-
-    positive_loss = -np.log(outputs[targets == 1]).mean()
-    logging.info("Positive loss: {:.4f}".format(positive_loss))
-    positive_acc = sum(outputs[targets == 1] > 0.5) / len(outputs)
-    logging.info("Positive accuracy: {:.4f}".format(positive_acc))
     print()
     print("test:{} Test Loss: {:.4f}".format(epoch + 1, total_loss.avg))
+    print("clf_diff_acc@0.5: {:.4f}".format(clf_diff_acc.avg))
     outputs = torch.cat(outputs).cpu().data.numpy()
     targets = torch.cat(targets).cpu().data.numpy()
     auc = metrics.roc_auc_score(targets, outputs)
     print("test:{} AUC: {:.4f}".format(epoch + 1, auc))
+    predicts = np.where(outputs > 0.5, 1, 0)
+    accuracy = metrics.accuracy_score(predicts, targets)
+    print("Accuracy@0.5: {:.4f}".format(accuracy))
+
     auc_epochs.append(auc)
 
     # Fill in the blank evaluation
@@ -111,7 +103,8 @@ for epoch in range(test_num):
         images = []
         for option in options:
             new_outfit = items.clone()
-            new_outfit = torch.cat((new_outfit, option), 1)
+            # print("new_outfit.shape = {}, option.shape = {}".format(new_outfit.shape, option.unsqueeze(0).shape))
+            new_outfit = torch.cat((new_outfit, option.unsqueeze(0)), 0)
             images.append(new_outfit)
         images = torch.stack(images).to(device)
         pos_out, neg_out, diff, _ = model.conpute_compatible_score(images)
