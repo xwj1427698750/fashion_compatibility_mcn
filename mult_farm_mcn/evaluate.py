@@ -18,7 +18,7 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--model_path', type=str, default="./model_train_v5_wide_deep_scale(double_conv).pth")
+parser.add_argument('--model_path', type=str, default="./model_train_v5_deep_scale(double_conv).pth")
 args = parser.parse_args()
 
 print(args)

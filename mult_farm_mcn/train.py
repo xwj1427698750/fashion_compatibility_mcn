@@ -20,7 +20,8 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--comment', type=str, default="v5_wide_deep_scale(double_conv)")
+parser.add_argument('--comment', type=str, default="v5_deep_scale(double_conv)_xavir")
+parser.add_argument('--clip', type=int, default=5)
 args = parser.parse_args()
 
 print(args)
@@ -29,7 +30,7 @@ vse_off = args.vse_off
 pe_off = args.pe_off
 mlp_layers = args.mlp_layers
 conv_feats = args.conv_feats
-
+clip = args.clip
 # Logger
 config_logging(comment)
 
@@ -50,7 +51,7 @@ def train(model, device, train_loader, val_loader, comment):
     model = model.to(device)
     criterion = nn.BCELoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-2, momentum=0.9)
-    scheduler = lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.9)
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
     saver = BestSaver(comment)
     epochs = 50
     for epoch in range(1, epochs + 1):
@@ -91,6 +92,7 @@ def train(model, device, train_loader, val_loader, comment):
             # Backpropagation
             model.zero_grad()
             total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
             optimizer.step()
             if batch_num % 50 == 0:
                 logging.info(

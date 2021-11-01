@@ -53,9 +53,6 @@ class CompatModel(nn.Module):
             self.predictor = nn.Sequential(*predictor)
         self.sigmoid = nn.Sigmoid()
 
-        nn.init.xavier_uniform_(cnn.fc.weight)
-        nn.init.constant_(cnn.fc.bias, 0)
-
         # # Type specified masks
         # # l1, l2, l3 is the masks for feature maps for the beginning layers
         # # not suffix one is for the last layer
@@ -93,7 +90,7 @@ class CompatModel(nn.Module):
                 if size == 4:
                     stride = (size, 1)
                 conv_net_wide = nn.Sequential(
-                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=(size, layer_feature_weights[i]),stride=stride),
+                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=(size, layer_feature_weights[i]), stride=stride),
                     nn.BatchNorm2d(1),
                     nn.ReLU(),
                     nn.Flatten(),
@@ -175,25 +172,31 @@ class CompatModel(nn.Module):
             output_size = fcs_output_size[i]
 
             linear = nn.Linear(input_size, output_size)
-            nn.init.xavier_uniform_(linear.weight)
-            nn.init.constant_(linear.bias, 0)
-            multi_scale_fc = nn.Sequential(linear, nn.ReLU())
+            linear2 = nn.Linear(output_size, output_size)
+            multi_scale_fc = nn.Sequential(linear, nn.ReLU(), linear2)
             self.layer_convs_fcs.append(multi_scale_fc)
 
-        self.multi_layer_predictor = nn.Linear(64 + 68, 1)
-        nn.init.xavier_uniform_(self.multi_layer_predictor.weight)
-        nn.init.constant_(self.multi_layer_predictor.bias, 0)
-
-        # 额外的残差全连接层
-        self.layer_addtion_fcs = nn.ModuleList()
-        self.res_fc_layers = 3  #残差层数
-        fc_size = fcs_output_size[-1]
-        for i in range(self.res_fc_layers):
-            fc = nn.Sequential(
-                nn.Linear(fc_size, fc_size),
-                nn.ReLU()
-            )
-            self.layer_addtion_fcs.append(fc)
+        self.multi_layer_predictor = nn.Linear(64, 1)
+        # 网络参数初始化
+        to_init_net = [self.multi_layer_predictor, self.layer_convs_fcs, self.layer_deep1_convs, self.layer_deep2_convs,
+                       self.layer_wide_convs, self.cnn.fc]
+        for net in to_init_net:
+            for m in net.modules():
+                if isinstance(m, (nn.Conv2d, nn.Linear)):
+                    nn.init.xavier_uniform_(m.weight)
+                    nn.init.constant_(m.bias, 0)
+        # # 额外的残差全连接层
+        # self.layer_addtion_fcs = nn.ModuleList()
+        # self.res_fc_layers = 3  #残差层数
+        # fc_size = fcs_output_size[-1]
+        # for i in range(self.res_fc_layers):
+        #     fc = nn.Sequential(
+        #         nn.BatchNorm1d(fc_size),
+        #         nn.Linear(fc_size, fc_size),
+        #         nn.ReLU(),
+        #         nn.Linear(fc_size, fc_size),
+        #     )
+        #     self.layer_addtion_fcs.append(fc)
 
     def forward(self, images, names):
         """
@@ -316,10 +319,6 @@ class CompatModel(nn.Module):
                                      rep_li[:, :, 0, :]), 2).reshape(shape[0], shape[1], shape[2] + 1, shape[3])
             rep_li_double = torch.cat((rep_li, rep_li_copy), 2)  # (16,1,9,256), rep_l2 (16,1,9,512), rep_l3 (16,1,9,1024), rep_l4 (16,1,9,2048)
 
-            multi_scale_li_feature = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_wide_convs[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
-            wide_cat_feature = torch.cat(multi_scale_li_feature, 1)  # wide_cat_feature  每层都是[16 ,(8 + 7 + 2)]
-            layer_wide_output.append(wide_cat_feature)  # layer_wide_output是一个list 包含4个[16, (8 + 7 + 2)]
-
             # deep融合模块
             multi_scale_li_feature = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_deep1_convs[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
             cat_feature1 = torch.cat(multi_scale_li_feature, 1)
@@ -332,25 +331,23 @@ class CompatModel(nn.Module):
             cat_feature_fuse = torch.cat((cat_feature1, cat_feature2), 1)
             multi_scale_concats.append(cat_feature_fuse)  # [16, 3x255 + 2x254 + 1x253], [16, 3*511 + 2*510 + 1*509], [16, 3*1023 + 2*1022 + 1*1021], [16, 3*2047 + 2*2046 + 1*2045]
 
-        # wide层级汇合部分
-        layer_wide_output = torch.cat(layer_wide_output, 1)  # [16, 4 X (8 + 7 + 2)] = [16, 68]
-
         # deep层级特征融合模块
-        layer1_to_2 = self.layer_convs_fcs[0](multi_scale_concats[0])                # [16, 64]
+        layer1_to_2 = F.relu(self.layer_convs_fcs[0](multi_scale_concats[0]))              # [16, 64]
         layer2_concat_layer1 = torch.cat((layer1_to_2, multi_scale_concats[1]), 1)
-        layer2_to_3 = self.layer_convs_fcs[1](layer2_concat_layer1) + layer1_to_2    # [16, 64]
+        layer2_to_3 = F.relu(self.layer_convs_fcs[1](layer2_concat_layer1) + layer1_to_2)     # [16, 64]
         layer3_concat_layer2 = torch.cat((layer2_to_3, multi_scale_concats[2]), 1)
-        layer3_to_4 = self.layer_convs_fcs[2](layer3_concat_layer2) + layer2_to_3    # [16, 64]
+        layer3_to_4 = F.relu(self.layer_convs_fcs[2](layer3_concat_layer2) + layer2_to_3)    # [16, 64]
         layer4_concat_layer3 = torch.cat((layer3_to_4, multi_scale_concats[3]), 1)
-        layer4_to_out = self.layer_convs_fcs[3](layer4_concat_layer3) + layer3_to_4  # [16, 64]
+        layer4_to_out = F.relu(self.layer_convs_fcs[3](layer4_concat_layer3) + layer3_to_4)  # [16, 64]
 
-        # 额外的残差全连接层
-        out1 = self.layer_addtion_fcs[0](layer4_to_out) + layer4_to_out
-        out2 = self.layer_addtion_fcs[1](out1) + out1
-        out3 = self.layer_addtion_fcs[2](out2) + out2
+        # # 额外的残差全连接层
+        # out1 = self.layer_addtion_fcs[0](layer4_to_out) + layer4_to_out
+        # out2 = self.layer_addtion_fcs[1](out1) + out1
+        # out3 = self.layer_addtion_fcs[2](out2) + out2
 
-        fuse_feature = torch.cat((layer_wide_output, out3), 1)  # [16, 64 + 68]
-        out = self.multi_layer_predictor(fuse_feature)
+        # fuse_feature = torch.cat((layer_wide_output, layer4_to_out), 1)  # [16, 64 + 68]
+        # fuse_feature = out3
+        out = self.multi_layer_predictor(layer4_to_out)
         if activate:
             out = self.sigmoid(out)
         if self.need_rep:
