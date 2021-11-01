@@ -44,7 +44,7 @@ train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader 
 )
 
 # Device
-device = torch.device("cuda:0")
+device = torch.device("cuda:1")
 
 # Model
 model = MultiModuleGenerator(embed_size=1000, need_rep=True, vocabulary=len(train_dataset.vocabulary),
@@ -88,7 +88,7 @@ def train(model, device, train_loader, val_loader, comment):
             out_pos, out_neg, low_resolution_img, high_resolution_img, difference_score, z_mean, z_log_var = model(images, names)
 
             # BCE Loss
-            clf_loss_param = 10
+            clf_loss_param = 1
             pos_outfit_target = torch.ones(size=[batch_size]).to(device)
             out_pos = out_pos.squeeze(dim=1)
             pos_clf_loss = clf_loss_param * criterion(out_pos, pos_outfit_target)
@@ -96,15 +96,15 @@ def train(model, device, train_loader, val_loader, comment):
             neg_outfit_target = torch.zeros(size=[batch_size]).to(device)
             out_neg = out_neg.squeeze(dim=1)
             neg_clf_loss = clf_loss_param * criterion(out_neg, neg_outfit_target)
-
+            # pos_clf_loss = neg_clf_loss = torch.tensor(0)
             # BPR LOSS
-            bpr_param = 100
+            bpr_param = 1
             bpr_loss = bpr_param * torch.sum(-log_sigmoid(difference_score))
 
             # Generator LOSS
             shape = low_resolution_img.shape
-            l1_loss_param = shape[1] * shape[2] * shape[3]
-            l2_loss_param = shape[1] * shape[2] * shape[3]
+            l1_loss_param = 100
+            l2_loss_param = 100
 
             l2_loss = l1_loss_param * get_l2_loss(low_resolution_img, generator_target_img)
             l1_loss = l2_loss_param * get_l1_loss(high_resolution_img, generator_target_img)
