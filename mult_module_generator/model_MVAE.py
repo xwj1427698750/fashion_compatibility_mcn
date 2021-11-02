@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils.rnn as rnn_utils
+import math
 
 from model import CompatModel
 
@@ -16,6 +17,118 @@ def convtrans2D_output_size(img_size, padding, kernel_size, stride):
                 (img_size[1] - 1) * stride[1] - 2 * padding[1] + kernel_size[1])
     return outshape
 
+class LayerNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-12):
+        """Construct a layernorm module in the TF style (epsilon inside the square root).
+        """
+        super(LayerNorm, self).__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.bias = nn.Parameter(torch.zeros(hidden_size))
+        self.variance_epsilon = eps
+
+    def forward(self, x):
+        u = x.mean(-1, keepdim=True)
+        s = (x - u).pow(2).mean(-1, keepdim=True)
+        x = (x - u) / torch.sqrt(s + self.variance_epsilon)
+        return self.weight * x + self.bias
+
+
+class SelfAttention(nn.Module):
+    def __init__(self, num_attention_heads, input_size, hidden_size, hidden_dropout_prob=0.5, attention_dropout_prob=0.5):
+        super(SelfAttention, self).__init__()
+        if hidden_size % num_attention_heads != 0:
+            raise ValueError(
+                "The hidden size (%d) is not a multiple of the number of attention "
+                "heads (%d)" % (hidden_size, num_attention_heads))
+        self.num_attention_heads = num_attention_heads
+        self.attention_head_size = hidden_size // num_attention_heads
+        self.all_head_size = hidden_size
+        query_linear = nn.Linear(input_size, self.all_head_size)
+        nn.init.xavier_uniform_(query_linear.weight)
+        nn.init.constant_(query_linear.bias, 0)
+        self.query = nn.Sequential(
+            query_linear,
+            nn.ReLU(),
+        )
+        key_linear = nn.Linear(input_size, self.all_head_size)
+        nn.init.xavier_uniform_(key_linear.weight)
+        nn.init.constant_(key_linear.bias, 0)
+        self.key = nn.Sequential(
+            key_linear,
+            nn.ReLU(),
+        )
+        value_linear = nn.Linear(input_size, self.all_head_size)
+        nn.init.xavier_uniform_(value_linear.weight)
+        nn.init.constant_(value_linear.bias, 0)
+        self.value = nn.Sequential(
+            value_linear,
+            nn.ReLU(),
+        )
+
+        self.attn_dropout = nn.Dropout(attention_dropout_prob)
+
+        # 做完self-attention 做一个前馈全连接 LayerNorm 输出
+        self.dense = nn.Linear(hidden_size, hidden_size)
+        nn.init.xavier_uniform_(self.dense.weight)
+        nn.init.constant_(self.dense.bias, 0)
+        self.LayerNorm = LayerNorm(hidden_size, eps=1e-12)
+        self.out_dropout = nn.Dropout(hidden_dropout_prob)
+
+
+    def transpose_for_scores(self, x):
+        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
+        x = x.view(*new_x_shape)
+        return x.permute(0, 2, 1, 3)
+
+    def forward(self, input_tensor):
+        """
+        input_tensor's shape = (batch, n, input_size) = (batch_size, 3, 256|512|1024|2048)
+        输出# (batch,n, hidden_size) 输出的维度
+        """
+        # mixed_xxx_layer'shape = (batch, n, all_head_size)
+        mixed_query_layer = self.query(input_tensor)
+        mixed_key_layer = self.key(input_tensor)
+        mixed_value_layer = self.value(input_tensor)
+
+        # xxx_layer'shape = (batch, num_attention_heads, n, attention_head_size)
+        query_layer = self.transpose_for_scores(mixed_query_layer)
+        key_layer = self.transpose_for_scores(mixed_key_layer)
+        value_layer = self.transpose_for_scores(mixed_value_layer)
+
+        # Take the dot product between "query" and "key" to get the raw attention scores.
+        # attention_scores'shape = (batch, num_attention_heads, n, n) 最后的的维度(每一行)的内容是时尚单品1对其他单品的attention得分
+        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+
+        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
+        # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
+        # [batch_size heads seq_len seq_len] scores
+        # [batch_size 1 1 seq_len]
+
+        # attention_scores = attention_scores + attention_mask
+
+        # Normalize the attention scores to probabilities.
+        attention_probs = nn.Softmax(dim=-1)(attention_scores)
+        # This is actually dropping out entire tokens to attend to, which might
+        # seem a bit unusual, but is taken from the original Transformer paper.
+
+        attention_probs = self.attn_dropout(attention_probs)
+
+        # context_layer'shape = (batch,num_attention_heads,n,attention_head_size)
+        # 这里是attention得分和value加权求得的均值
+        context_layer = torch.matmul(attention_probs, value_layer)
+
+        # 变换context_layer维度，为了后面将各头得到的结果拼接。这里的contiguous()是将tensor的内存变成连续的，为后面的view()做准备。
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+
+        # 将各注意力头的结果拼接起来，context_layer：(batch,n,all_head_size)
+        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        context_layer = context_layer.view(*new_context_layer_shape)
+
+        hidden_states = self.dense(context_layer)
+        hidden_states = self.out_dropout(hidden_states)
+        # hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        out = self.LayerNorm(hidden_states)
+        return out  # (batch,n, all_head_size) 输出的维度
 
 # 隐变量的特征融合模块
 class LatentFeatureFuse(nn.Module):
@@ -66,13 +179,50 @@ class LatentFeatureFuse(nn.Module):
         fuse_feature = torch.cat(out_features, 1)  # (batch_size, 256*4)
         return fuse_feature, out_features
 
+class AttentionFeatureFuse(nn.Module):
+    def __init__(self, num_attention_heads=1, input_size=1000, hidden_size=1000, hidden_dropout_prob=0.5):
+        super(AttentionFeatureFuse, self).__init__()
+        self.last_attention = SelfAttention(num_attention_heads, input_size, hidden_size, hidden_dropout_prob)
+
+    def forward(self, last_features_input, outfit_num=4):
+        """
+        features_input'shape (batch, 3, 1000)
+        """
+        out = self.last_attention(last_features_input)  # 输出(batch, 3, hidden_size)
+        return out
+
+class LastFeatureFuse(nn.Module):
+    def __init__(self, drop=0.5):
+        super(LastFeatureFuse, self).__init__()
+        # Global average pooling layer
+        self.ada_avgpool2d = nn.AdaptiveAvgPool2d((1, 1))
+        self.last_fuse = nn.Sequential(
+            nn.Linear(1000*3, 1024),
+            nn.Dropout(drop),
+            nn.LeakyReLU()
+        )
+
+    def forward(self, last_features_input, outfit_num=4):
+        """
+        features_input'shape (batch, 3, 1000)
+        """
+        shape = last_features_input.shape
+        last_features = last_features_input.reshape(shape[0], -1)  # (batch,3000)
+        out = self.last_fuse(last_features)
+        return out
 
 #  高斯变化
 class Transformer(nn.Module):
     def __init__(self, input_size, output_size):
         super(Transformer, self).__init__()
-        self.fc1 = nn.Linear(input_size, output_size)
-        self.fc2 = nn.Linear(input_size, output_size)
+        self.fc1 = nn.Sequential(
+            nn.Linear(input_size, output_size),
+            nn.LeakyReLU()
+        )
+        self.fc2 = nn.Sequential(
+            nn.Linear(input_size, output_size),
+            nn.LeakyReLU()
+        )
 
     def forward(self, fuse_feature, device):
         """
@@ -107,10 +257,11 @@ class SRResNetBlock(nn.Module):
 
 # 生成器模块
 class Generator(nn.Module):
-    def __init__(self, input_size, feature_output_size):
+    def __init__(self, input_size, feature_output_size, drop=0.5):
         super(Generator, self).__init__()
         self.seq = nn.Sequential(  # 输入(batch_size, input_size), 输出(batch_size, 1024)
             nn.Linear(input_size, 1024),
+            nn.Dropout(drop),
             nn.BatchNorm1d(1024),
             nn.ReLU()
         )
@@ -311,9 +462,11 @@ class MultiModuleGenerator(nn.Module):
         self.encoder = CompatModel(embed_size=embed_size, need_rep=need_rep, vocabulary=vocabulary, vse_off=vse_off,
                                    pe_off=pe_off, mlp_layers=mlp_layers, conv_feats=conv_feats)
         self.encoder.load_state_dict(torch.load(encoder_path))
+        self.attention_fuse = AttentionFeatureFuse()
         self.latent_feature_fuse = LatentFeatureFuse()
+        self.last_feature_fuse = LastFeatureFuse()
         self.transformer = Transformer(input_size=256*4, output_size=256)
-        self.generator = Generator(input_size=256*4+256, feature_output_size=256)
+        self.generator = Generator(input_size=256 + 1024, feature_output_size=256)
         self.get_layer_out = LayerOut(feature_output_size=256)
         to_init_modules = [self.latent_feature_fuse, self.latent_feature_fuse, self.transformer, self.generator,
                            self.get_layer_out]
@@ -357,6 +510,24 @@ class MultiModuleGenerator(nn.Module):
         difference_score = score_pos - score_neg
         return difference_score  # (batch_size, 1)
 
+    # 层级特征交互得分计算
+    def get_layer_feature_score_wo_input(self, generator_layer_features, pos_layer_features,
+                                neg_layer_features):
+        """
+        pos_layer_features与input_fuse_features, generator_layer_features的交互得分大于(>)
+        neg_layer_features与input_fuse_features, generator_layer_features
+        每一个输入的维度是[4, batch_size, feature_output_size(256)]
+        """
+        batch_size = generator_layer_features[0].shape[0]
+        score_pos = torch.zeros(size=(batch_size, 1)).to(self.device)
+        score_neg = torch.zeros(size=(batch_size, 1)).to(self.device)
+        for layer_index in range(len(generator_layer_features)):
+            score_pos = score_pos + torch.sum(generator_layer_features[layer_index] * pos_layer_features[layer_index], dim=1, keepdim=True)  # [batch_size, 1]
+            score_neg = score_neg + torch.sum(generator_layer_features[layer_index] * neg_layer_features[layer_index], dim=1, keepdim=True)  # [batch_size, 1]
+
+        difference_score = score_pos - score_neg
+        return difference_score  # (batch_size, 1)
+
     def forward(self, images, names):
         """
         Args:
@@ -380,8 +551,16 @@ class MultiModuleGenerator(nn.Module):
         # 获得正负套装搭配的概率
         # reps_pos包含5层的特征，rep_l1, rep_l2, rep_l3, rep_l4, rep_last_2th
         # [batch_size*outfit_num,256,56,56],[batch_size*outfit_num,512,28,28],[batch_size*outfit_num,1024,14,14],[batch_size*outfit_num, 2048, 7, 7]，_, 我们用到了前面4个
+        # features_pos (batch*outfit_num, 1000)
         out_pos, features_pos, _, _, reps_pos = self.encoder._compute_feature_fusion_score(outfit_pos)
         out_neg, features_neg, _, _, reps_neg = self.encoder._compute_feature_fusion_score(outfit_neg)
+
+        # 融合的特征，增加最终的features
+        features_pos = features_pos.reshape(batch_size, item_num - 1, -1)  # (8, 4, 1000)
+        features_input = torch.cat((features_pos[:, :generator_id, :], features_pos[:, generator_id+1:, :]), 1)  # (8, 3, 1000)
+
+        # 进行attention聚合操作
+        atten_features = self.attention_fuse(features_input)
 
         for i in range(4):
             shape = reps_pos[i].shape
@@ -391,12 +570,13 @@ class MultiModuleGenerator(nn.Module):
         # 输入图片特征融合模块
         # reps_pos是一个长度2为5的列表，shape是[5, batch_size*outfit_num, 256, 56, 56],但是只使用其中的前4个
         # input_fuse_features, 尺寸是# (batch_size, 256*4) out_features是tensor的列表, 尺寸是 [4, batch_size, 256]
-        input_fuse_features, out_features = self.latent_feature_fuse(reps_pos[0:4], generator_id)
+        # input_fuse_features, out_features = self.latent_feature_fuse(reps_pos[0:4], generator_id)
+        input_fuse_features = self.last_feature_fuse(atten_features)
 
         z, z_mean, z_log_var = self.transformer(input_fuse_features, self.device)
 
         # 生成模块
-        generator_input = torch.cat((z, input_fuse_features), 1)  # generator_input : [16, 256 + 1024]
+        generator_input = torch.cat((z, input_fuse_features), 1)  # generator_input : [batch, 256 + 1024]
         low_resolution_img, high_resolution_img, generator_layer_features = self.generator(generator_input)
         # [batch_size, 3, 224,224], [batch_size, 3,224,224], generator_layer_features: [4, batch_size, 256]
 
@@ -408,8 +588,8 @@ class MultiModuleGenerator(nn.Module):
         pos_layer_out = self.get_layer_out(pos_layer_reps)
 
         # 正样本与负样本的层级特征交互得分差 difference_score (batch_size, 1)
-        difference_score = self.get_layer_feature_score(out_features, generator_layer_features, pos_layer_out, neg_layer_out)
-
+        # difference_score = self.get_layer_feature_score(out_features, generator_layer_features, pos_layer_out, neg_layer_out)
+        difference_score = self.get_layer_feature_score_wo_input(generator_layer_features, pos_layer_out, neg_layer_out)
         return out_pos, out_neg, low_resolution_img, high_resolution_img, difference_score, z_mean, z_log_var
 
 

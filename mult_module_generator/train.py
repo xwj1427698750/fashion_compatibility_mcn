@@ -21,7 +21,7 @@ parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
 parser.add_argument('--generator_type', type=str, default="upper")
-parser.add_argument('--comment', type=str, default="generator_fuse")
+parser.add_argument('--comment', type=str, default="atten_fuse_generator_fuse")
 parser.add_argument('--clip', type=int, default=5)
 args = parser.parse_args()
 
@@ -74,6 +74,8 @@ def train(model, device, train_loader, val_loader, comment):
         l2_losses = AverageMeter()
         l1_losses = AverageMeter()
         kl_losses = AverageMeter()
+        pos_gt_neg_acc = AverageMeter()
+
         # Train phase
         model.train()
         for batch_num, batch in enumerate(train_loader, 1):
@@ -85,18 +87,20 @@ def train(model, device, train_loader, val_loader, comment):
             # images.shape [8, 5, 3, 224, 224], [batch_size, item_length, C, H, W ]
             # names is a list with length 40 = 8 * 5, each item of which is a tensor 1-dim like:tensor([772,  68,  72, 208])
             # Forward   前向训练只需要 图像和文本数据
-            out_pos, out_neg, low_resolution_img, high_resolution_img, difference_score, z_mean, z_log_var = model(images, names)
-
+            pos_out, neg_out, low_resolution_img, high_resolution_img, difference_score, z_mean, z_log_var = model(images, names)
             # BCE Loss
             clf_loss_param = 1
-            pos_outfit_target = torch.ones(size=[batch_size]).to(device)
-            out_pos = out_pos.squeeze(dim=1)
-            pos_clf_loss = clf_loss_param * criterion(out_pos, pos_outfit_target)
+            pos_target = torch.ones(batch_size)
+            pos_out = pos_out.squeeze(dim=1)
+            neg_target = torch.zeros(batch_size)
+            neg_out = neg_out.squeeze(dim=1)
 
-            neg_outfit_target = torch.zeros(size=[batch_size]).to(device)
-            out_neg = out_neg.squeeze(dim=1)
-            neg_clf_loss = clf_loss_param * criterion(out_neg, neg_outfit_target)
-            # pos_clf_loss = neg_clf_loss = torch.tensor(0)
+            output = torch.cat((pos_out, neg_out))
+            target = torch.cat((pos_target, neg_target)).to(device)
+            clf_loss = clf_loss_param * criterion(output, target)
+            # 准确率的另外一种计算方式
+            pos_gt_neg = torch.sum((pos_out >= neg_out).float())
+            pos_gt_neg_acc.update(pos_gt_neg, batch_size)
             # BPR LOSS
             bpr_param = 1
             bpr_loss = bpr_param * torch.sum(-log_sigmoid(difference_score))
@@ -113,14 +117,15 @@ def train(model, device, train_loader, val_loader, comment):
             kl_loss = torch.sum(-0.5*torch.sum(1 + z_log_var-torch.square(z_mean) - torch.exp(z_log_var)))
 
             # Sum all losses up
-            total_loss = pos_clf_loss + neg_clf_loss + bpr_loss + l2_loss + l1_loss + kl_loss
+            total_loss = clf_loss + bpr_loss + l2_loss + l1_loss + kl_loss
 
             # Update Recoder
-            clf_losses.update(pos_clf_loss.item() + neg_clf_loss.item(), images.shape[0])
+            clf_losses.update(clf_loss.item(), images.shape[0])
             bpr_losses.update(bpr_loss.item(), images.shape[0])
             l2_losses.update(l2_loss.item(), images.shape[0])
             l1_losses.update(l1_loss.item(), images.shape[0])
             kl_losses.update(kl_loss.item(), images.shape[0])
+
             total_losses.update(total_loss.item(), images.shape[0])
             # Backpropagation
             model.zero_grad()
@@ -129,8 +134,8 @@ def train(model, device, train_loader, val_loader, comment):
             optimizer.step()
             if batch_num % 50 == 0:
                 logging.info(
-                    "[{}/{}] #{} clf_loss: {:.4f}, bpr_loss: {:.4f}, l2_loss: {:.4f}, l1_loss: {:.4f}, kl_loss: {:.4f}, total_loss:{:.4f}".format(
-                        epoch, epochs, batch_num, clf_losses.val, bpr_losses.val, l2_losses.val, l1_losses.val, kl_losses.val, total_losses.val
+                    "[{}/{}] #{} clf_loss: {:.4f}, pos_gt_neg.avg: {:.4f} bpr_loss: {:.4f}, l2_loss: {:.4f}, l1_loss: {:.4f}, kl_loss: {:.4f}, total_loss:{:.4f}".format(
+                        epoch, epochs, batch_num, clf_losses.val, pos_gt_neg_acc.avg, bpr_losses.val, l2_losses.val, l1_losses.val, kl_losses.val, total_losses.val
                     )
                 )
         scheduler.step()
@@ -151,15 +156,15 @@ def train(model, device, train_loader, val_loader, comment):
             neg_outfit_target = torch.zeros(size=[batch_size]).to(device)
 
             with torch.no_grad():
-                out_pos, out_neg, low_resolution_img, high_resolution_img, difference_score, z_mean, z_log_var = model(images, names)
+                pos_out, neg_out, low_resolution_img, high_resolution_img, difference_score, z_mean, z_log_var = model(images, names)
                 # out_pos :(batch_size, 1)          low_resolution_img:(batch_size, 3, 224, 224)         difference_score:   (batch_size, 1)
-                out_pos = out_pos.squeeze(dim=1)
-                out_neg = out_neg.squeeze(dim=1)
-                pos_clf_loss = criterion(out_pos, pos_outfit_target)
-                neg_clf_loss = criterion(out_neg, neg_outfit_target)
+                pos_out = pos_out.squeeze(dim=1)
+                neg_out = neg_out.squeeze(dim=1)
+                pos_clf_loss = criterion(pos_out, pos_outfit_target)
+                neg_clf_loss = criterion(neg_out, neg_outfit_target)
             # 通过分类模型计算的一种方式
             clf_losses.update(pos_clf_loss.item() + neg_clf_loss.item(), images.shape[0])
-            output = torch.cat((out_pos, out_neg))
+            output = torch.cat((pos_out, neg_out))
             outputs.append(output)
             target = torch.cat((pos_outfit_target, neg_outfit_target))
             targets.append(target)
@@ -168,7 +173,13 @@ def train(model, device, train_loader, val_loader, comment):
             difference_score_sum = torch.sum((difference_score > 0).float())
             diff_acc = difference_score_sum / difference_score.shape[0]
             clf_diff_acc.update(diff_acc.item(), 1)
-        logging.info("Valid Loss (clf_loss): {:.4f}".format(clf_losses.avg))
+
+            # 准确率的另外一种计算方式
+            pos_gt_neg = torch.sum((pos_out >= neg_out).float() >= 0)
+            pos_gt_neg_acc.update(pos_gt_neg, batch_size)
+        logging.info("Valid Loss")
+        logging.info("pos_gt_neg_acc: {:.4f}".format(pos_gt_neg_acc.avg))
+        logging.info("clf_loss: {:.4f}".format(clf_losses.avg))
         logging.info("clf_diff_acc: {:.4f}".format(clf_diff_acc.avg))
         outputs = torch.cat(outputs).cpu().data.numpy()
         targets = torch.cat(targets).cpu().data.numpy()
@@ -182,7 +193,7 @@ def train(model, device, train_loader, val_loader, comment):
         positive_acc = sum(outputs[targets==1]>0.5) / len(outputs)
         logging.info("Positive accuracy: {:.4f}".format(positive_acc))
         # Save best model
-        saver.save(auc, clf_diff_acc.avg, model.state_dict(), epoch)
+        saver.save(auc, pos_gt_neg_acc.avg, model.state_dict(), epoch)
         logging.info("Best AUC is : {:.4f} Best_epoch is {}".format(saver.best_auc, saver.best_auc_epoch))  # 输出已经选择好的最佳模型
         logging.info("Best ACC is : {:.4f} Best_epoch is {}".format(saver.best_acc, saver.best_acc_epoch))  # 输出已经选择好的最佳模型
         logging.info("Best ACC(AUC) is : {:.4f} Best_epoch is {}".format(saver.best_acc_auc, saver.best_acc_auc_epoch))  # 输出已经选择好的最佳模型
