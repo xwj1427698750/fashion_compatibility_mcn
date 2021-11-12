@@ -18,20 +18,16 @@ import argparse
 parser = argparse.ArgumentParser(description='Fashion Compatibility Training.')
 parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
-parser.add_argument('--mlp_layers', type=int, default=2)
-parser.add_argument('--conv_feats', type=str, default="1234")
 parser.add_argument('--generator_type', type=str, default="mix")
-parser.add_argument('--comment', type=str, default="generator_fuse_farm")
+parser.add_argument('--comment', type=str, default="generator_fuse_farm_atten(head_num=8)")
 parser.add_argument('--clip', type=int, default=5)
-parser.add_argument('--num_attention_heads', type=int, default=0)
+parser.add_argument('--num_attention_heads', type=int, default=8)
 args = parser.parse_args()
 
 print(args)
 comment = args.comment
 vse_off = args.vse_off
 pe_off = args.pe_off
-mlp_layers = args.mlp_layers
-conv_feats = args.conv_feats
 generator_type = args.generator_type
 clip = args.clip
 num_attention_heads = args.num_attention_heads
@@ -49,7 +45,7 @@ device = torch.device("cuda:0")
 
 # Model
 model = MultiModuleGenerator(vocabulary=len(train_dataset.vocabulary), num_attention_heads=num_attention_heads, device=device)
-
+# model.load_state_dict(torch.load("data_mix_model_diff_acc_train_generator_fuse_farm.pth"))
 # Train process
 def train(model, device, train_loader, val_loader, comment):
     type_to_id = {'upper': 0, 'bottom': 1, 'bag': 2, 'shoe': 3}
@@ -63,7 +59,7 @@ def train(model, device, train_loader, val_loader, comment):
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     # scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
     saver = BestSaver(comment)
-    epochs = 50
+    epochs = 100
 
     for epoch in range(1, epochs + 1):
         logging.info("Train Phase, Epoch: {}".format(epoch))
@@ -146,7 +142,7 @@ def train(model, device, train_loader, val_loader, comment):
             if batch_num % 50 == 0:
                 logging.info(
                     "[{}/{}] #{}  bpr_loss: {:.4f}, l2_loss: {:.4f}, l1_loss: {:.4f}, kl_loss: {:.4f}, total_loss:{:.4f}".format(
-                        epoch, epochs, batch_num,  bpr_losses.val, l2_losses.val, l1_losses.val, kl_losses.val, total_losses.val
+                        epoch, epochs, batch_num,  bpr_losses.avg, l2_losses.avg, l1_losses.avg, kl_losses.avg, total_losses.avg
                     )
                 )
         # scheduler.step()

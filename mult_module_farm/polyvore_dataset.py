@@ -55,7 +55,7 @@ class CategoryDataset(Dataset):
         change_id = random.randint(0, 3)  # 在候选套装中，随机选择一件单品的类型
         imgs = []
         labels = []
-        names = []
+        names = torch.zeros(len(self.vocabulary))
         # 获取正样本
         for part in ['upper', 'bottom', 'bag', 'shoe']:
             img_path = os.path.join(self.root_dir, str(parts[part]['index']) + '.jpg')
@@ -104,37 +104,42 @@ class CategoryDataset(Dataset):
             expect original composition get highest score
         """
         set_id, parts = self.data[index]  # set_id：套装id, parts:套装的组成部分的描述
-        # question_part = random.choice(list(parts))  # list(parts)获得parts中的keys形成的列表，然后从中随机选择一个， eg:  question_part：upper
-        question_part = self.generator_type  # 选择的都是预先设定好的类别
-        question_id = "{}_{}".format(set_id, parts[question_part]['index'])  # eg:  parts[question_part]['index'] : be9627e0c2e43ee96017e288b03eed96(图片的编号)
+        category = ['upper', 'bottom', 'bag', 'shoe']
+        change_id = random.randint(0, 3)  # 在候选套装中，随机选择一件单品的类型
+        question_id = "{}_{}".format(set_id, parts[category[change_id]]['index'])  # eg:  parts[question_part]['index'] : be9627e0c2e43ee96017e288b03eed96(图片的编号)
         imgs = []
+        names = torch.zeros(len(self.vocabulary))
         labels = []
         for part in ['upper', 'bottom', 'bag', 'shoe']:
-            if part in parts.keys():
-                img_path = os.path.join(self.root_dir, str(parts[part]['index'])+'.jpg')
-                img = Image.open(img_path).convert('RGB')
-                img = self.transform(img)
-                imgs.append(img)
-                labels.append('{}_{}_{}'.format(set_id, part, parts[part]['index']))
+            img_path = os.path.join(self.root_dir, str(parts[part]['index'])+'.jpg')
+            img = Image.open(img_path).convert('RGB')
+            img = self.transform(img)
+            imgs.append(img)
+            if category[change_id] == part:
+                names = torch.Tensor(self.str_to_idx(parts[part]['name']))
+            labels.append('{}_{}_{}'.format(set_id, part, parts[part]['index']))
+        # 将目标单品移动到最后一个位置
+        imgs[change_id], imgs[3] = imgs[3], imgs[change_id]
+        labels[change_id], labels[3] = labels[3], labels[change_id]
         items = torch.stack(imgs)  # 正确的搭配
-
+        # 负样本
         option_ids = [set_id]
         options = []
         option_labels = []
         while len(option_ids) < option_len:
             option = random.choice(self.data)
-            if (option[0] in option_ids) or (question_part not in option[1]):
+            if (option[0] in option_ids) or (category[change_id] not in option[1]):
                 continue
             else:
                 option_ids.append(option[0])
-                img_path = os.path.join(self.root_dir, str(option[1][question_part]['index'])+'.jpg')
+                img_path = os.path.join(self.root_dir, str(option[1][category[change_id]]['index'])+'.jpg')
                 img = Image.open(img_path).convert('RGB')
                 img = self.transform(img)
                 options.append(img)
-                option_labels.append("{}_{}_{}".format(option[0], question_part, option[1][question_part]['index']))
+                option_labels.append("{}_{}_{}".format(option[0], category[change_id], option[1][category[change_id]]['index']))
 
         # Return 4 options for question, 3 incorrect options
-        return items, labels, question_part, question_id, options, option_labels
+        return items, names, labels, category[change_id], question_id, options, option_labels
 
 def collate_fn(data):
     """Need custom a collate_fn"""

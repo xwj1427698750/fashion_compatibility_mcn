@@ -46,21 +46,21 @@ class SelfAttention(nn.Module):
         nn.init.constant_(query_linear.bias, 0)
         self.query = nn.Sequential(
             query_linear,
-            nn.ReLU(),
+            # nn.ReLU(),
         )
         key_linear = nn.Linear(input_size, self.all_head_size)
         nn.init.xavier_uniform_(key_linear.weight)
         nn.init.constant_(key_linear.bias, 0)
         self.key = nn.Sequential(
             key_linear,
-            nn.ReLU(),
+            # nn.ReLU(),
         )
         value_linear = nn.Linear(input_size, self.all_head_size)
         nn.init.xavier_uniform_(value_linear.weight)
         nn.init.constant_(value_linear.bias, 0)
         self.value = nn.Sequential(
             value_linear,
-            nn.ReLU(),
+            # nn.ReLU(),
         )
 
         self.attn_dropout = nn.Dropout(attention_dropout_prob)
@@ -80,7 +80,7 @@ class SelfAttention(nn.Module):
 
     def forward(self, input_tensor):
         """
-        input_tensor's shape = (batch, n, input_size) = (batch_size, 3, 256|512|1024|2048)
+        input_tensor's shape = (batch, n, input_size) = (batch_size, 3, 100)
         输出# (batch,n, hidden_size) 输出的维度
         """
         # mixed_xxx_layer'shape = (batch, n, all_head_size)
@@ -124,7 +124,7 @@ class SelfAttention(nn.Module):
 
         hidden_states = self.dense(context_layer)
         hidden_states = self.out_dropout(hidden_states)
-        # hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        hidden_states = self.LayerNorm(hidden_states + input_tensor)
         out = self.LayerNorm(hidden_states)
         return out  # (batch,n, all_head_size) 输出的维度
 
@@ -178,13 +178,13 @@ class LatentFeatureFuse(nn.Module):
         return fuse_feature, out_features
 
 class AttentionFeatureFuse(nn.Module):
-    def __init__(self, num_attention_heads=1, input_size=1000, hidden_size=1000, hidden_dropout_prob=0.5):
+    def __init__(self, num_attention_heads=1, input_size=100, hidden_size=100, hidden_dropout_prob=0.5):
         super(AttentionFeatureFuse, self).__init__()
         self.last_attention = SelfAttention(num_attention_heads, input_size, hidden_size, hidden_dropout_prob)
 
     def forward(self, last_features_input, outfit_num=4):
         """
-        features_input'shape (batch, 3, 1000)
+        features_input'shape (batch, 3, 100)
         """
         out = self.last_attention(last_features_input)  # 输出(batch, 3, hidden_size)
         return out
@@ -296,9 +296,9 @@ class FeatureFusion(nn.Module):
             nn.Linear(item_input_size*3, output_size),
             nn.Sigmoid()
         )
-    def forward(self, enc): # enc (item_num:5, batch_size:16, 100)
-        enc_cat = torch.cat([enc[0], enc[1], enc[2]], 1)  # batch_size:16, 3*100 前3件为输入单品
-        return self.getFeatureFuse(enc_cat)  # batch_size, 100
+    def forward(self, enc_x): # enc ( batch_size:16, 3, 100)
+        enc_x = enc_x.reshape((enc_x.shape[0], -1))  # batch_size:16, 3*100 前3件为输入单品
+        return self.getFeatureFuse(enc_x)  # batch_size, 100
 
 
 #  高斯变化
@@ -436,23 +436,24 @@ class MultiModuleGenerator(nn.Module):
             conv_feats: decide which layer of conv features are used for comparision.
         """
         super(MultiModuleGenerator, self).__init__()
+        feature_size = 100
         self.type_to_id = {'upper': 0, 'bottom': 1, 'bag': 2, 'shoe': 3}
         self.device = device
         self.get_desc_embedding = nn.Sequential(
-            nn.Linear(in_features=vocabulary, out_features=100),  # desc_len:1245
+            nn.Linear(in_features=vocabulary, out_features=feature_size),  # desc_len:1245
             nn.Sigmoid(),
         )
-        self.encoder = Encoder(output_size=100, drop=0.5)
+        self.encoder = Encoder(output_size=feature_size, drop=0.5)
 
         self.num_attention_heads = num_attention_heads
         if self.num_attention_heads > 0:
-            self.attention_fuse = AttentionFeatureFuse(num_attention_heads=num_attention_heads)
+            self.attention_fuse = AttentionFeatureFuse(num_attention_heads=num_attention_heads, input_size=feature_size, hidden_size=feature_size)
 
-        self.get_feature_fuse = FeatureFusion(item_input_size=100, output_size=100)
+        self.get_feature_fuse = FeatureFusion(item_input_size=feature_size, output_size=feature_size)
 
-        self.transformer = Transformer(item_input_size=100, output_size=100)
+        self.transformer = Transformer(item_input_size=feature_size, output_size=feature_size)
 
-        self.generator = Generator(item_input_size=100, output_size=100)
+        self.generator = Generator(item_input_size=feature_size, output_size=feature_size)
 
         to_init_modules = [self.get_desc_embedding, self.encoder, self.get_feature_fuse, self.transformer, self.generator]
         if num_attention_heads > 0:
@@ -542,7 +543,12 @@ class MultiModuleGenerator(nn.Module):
         feature_yp = [layer3[3], layer2[3], layer1[3]]   # 第四件单品的前3层特征 正样本
         feature_yn = [layer3[4], layer2[4], layer1[4]]   # 第五件单品的前3层特征 负样本
 
-        enc_x = self.get_feature_fuse(enc)  # 获得3件输入的最后一层特征
+        enc_x = torch.stack((enc[0], enc[1], enc[2]), 1)  # (batch_size, 3, 100)
+        # attention 模块
+        if self.num_attention_heads > 0:
+            enc_x = self.attention_fuse(enc_x)
+
+        enc_x = self.get_feature_fuse(enc_x)  # 获得3件输入的最后一层特征
         # 变分转换
         z, z_mean, z_log_var = self.transformer(enc_x, enc_desc, self.device)
 
@@ -550,7 +556,7 @@ class MultiModuleGenerator(nn.Module):
         fuse_feature = torch.cat((z, enc_x, enc_desc), 1)  # batch_size, 100
         low_resolution_img, high_resolution_img, feature_yg = self.generator(fuse_feature) # gen_features = [feature1, feature2, feature3]
 
-        difference_pn = self.get_layer_feature_score(enc, feature_x1, feature_x2, feature_x3, feature_yp, feature_yn, enc_x, enc_desc, feature_yg) # (batch_size,)
+        difference_pn = self.get_layer_feature_score(enc, feature_x1, feature_x2, feature_x3, feature_yp, feature_yn, enc_x, enc_desc, feature_yg)  # (batch_size,)
 
         # (3,128,128), (3,128,128), (batch_size,), (batch_size, 100), (batch_size, 100)
         return low_resolution_img, high_resolution_img, difference_pn, z_mean, z_log_var
