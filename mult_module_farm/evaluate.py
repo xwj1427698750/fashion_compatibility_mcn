@@ -18,9 +18,10 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--model_path', type=str, default="./data_mix_model_diff_acc_train_generator_fuse_farm.pth")
-parser.add_argument('--generator_type', type=str, default="upper")
-parser.add_argument('--num_attention_heads', type=int, default=0)
+parser.add_argument('--model_path', type=str, default="./data_mix_model_diff_acc_train_generator_fuse_farm_atten(head_num=1)_mlmsff_(feature_size=128).pth")
+parser.add_argument('--generator_type', type=str, default="mix")
+parser.add_argument('--num_attention_heads', type=int, default=1)
+parser.add_argument('--feature_size', type=int, default=128)
 args = parser.parse_args()
 
 print(args)
@@ -31,6 +32,7 @@ conv_feats = args.conv_feats
 model_path = args.model_path
 generator_type = args.generator_type
 num_attention_heads = args.num_attention_heads
+feature_size = args.feature_size
 batch_size = 64
 # Dataloader
 train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader = (
@@ -38,8 +40,8 @@ train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader 
 )
 
 # Load pretrained weights
-device = torch.device("cuda:1")
-model = MultiModuleGenerator(vocabulary=len(train_dataset.vocabulary), num_attention_heads=num_attention_heads, device=device).to(device)
+device = torch.device("cuda:0")
+model = MultiModuleGenerator(vocabulary=len(train_dataset.vocabulary), num_attention_heads=num_attention_heads, device=device, feature_size=feature_size).to(device)
 model.load_state_dict(torch.load(model_path))
 criterion = nn.BCELoss()
 
@@ -47,6 +49,7 @@ criterion = nn.BCELoss()
 model.eval()
 test_num = 10
 auc_epochs = []
+diff_epochs = []
 for epoch in range(test_num):
     clf_losses = AverageMeter()
     clf_diff_acc = AverageMeter()
@@ -58,22 +61,21 @@ for epoch in range(test_num):
         images = images.to(device)
         names = names.to(device)
         batch_size, _, _, _, img_size = images.shape  # 训练集中，在batch_size = 8 的情况下，最后一个batch的大小是4，多以在这里加一句，在最后一个batch的时候，更改下batch_size的大小
-        # pos_outfit_target = torch.ones(size=[batch_size]).to(device)
-        # neg_outfit_target = torch.zeros(size=[batch_size]).to(device)
+        pos_target = torch.ones(size=[batch_size])
+        neg_target = torch.zeros(size=[batch_size])
 
         with torch.no_grad():
-            _, _, difference_score, z_mean, z_log_var = model(images, names)
+            _, _, difference_score, z_mean, z_log_var, pos_out, neg_out = model(images, names)
             # out_pos :(batch_size, 1)          low_resolution_img:(batch_size, 3, 224, 224)         difference_score:   (batch_size, 1)
-            # out_pos = out_pos.squeeze(dim=1)
-            # out_neg = out_neg.squeeze(dim=1)
-            # pos_clf_loss = criterion(out_pos, pos_outfit_target)
-            # neg_clf_loss = criterion(out_neg, neg_outfit_target)
-        # # 通过分类模型计算的一种方式
-        # clf_losses.update(pos_clf_loss.item() + neg_clf_loss.item(), images.shape[0])
-        # output = torch.cat((out_pos, out_neg))
-        # outputs.append(output)
-        # target = torch.cat((pos_outfit_target, neg_outfit_target))
-        # targets.append(target)
+        pos_out = pos_out.squeeze(dim=1)
+        neg_out = neg_out.squeeze(dim=1)
+        output = torch.cat((pos_out, neg_out))
+        target = torch.cat((pos_target, neg_target)).to(device)
+        clf_loss = criterion(output, target)
+        # 通过分类模型计算的一种方式
+        clf_losses.update(clf_loss.item(), images.shape[0])
+        outputs.append(output)
+        targets.append(target)
         # 通过层级特征得分大小计算的一种方式
         difference_score = difference_score
         difference_score_true = (difference_score >= 0)
@@ -94,10 +96,10 @@ for epoch in range(test_num):
     print("Test Loss clf_diff_acc: {:.4f}".format(clf_diff_acc.avg))
     # print("mix_true_acc: {:.4f}".format(mix_true_acc.avg))
     # print("pos_gt_neg_acc: {:.4f}".format(pos_gt_neg_acc.avg))
-    # outputs = torch.cat(outputs).cpu().data.numpy()
-    # targets = torch.cat(targets).cpu().data.numpy()
-    # auc = metrics.roc_auc_score(targets, outputs)
-    # print("test:{} AUC: {:.4f}".format(epoch + 1, auc))
+    outputs = torch.cat(outputs).cpu().data.numpy()
+    targets = torch.cat(targets).cpu().data.numpy()
+    auc = metrics.roc_auc_score(targets, outputs)
+    print("test:{} AUC: {:.4f}".format(epoch + 1, auc))
     # predicts = np.where(outputs > 0.5, 1, 0)
     # accuracy = metrics.accuracy_score(predicts, targets)
     # print("Accuracy@0.5: {:.4f}".format(accuracy))
@@ -105,10 +107,13 @@ for epoch in range(test_num):
     # print("Positive loss: {:.4f}".format(positive_loss))
     # positive_acc = sum(outputs[targets == 1] > 0.5) / len(outputs)
     # print("Positive accuracy: {:.4f}".format(positive_acc))
-    auc_epochs.append(clf_diff_acc.avg)
+    auc_epochs.append(auc)
+    diff_epochs.append(clf_diff_acc.avg)
 auc_epochs = np.array(auc_epochs)
+diff_epochs = np.array(diff_epochs)
 auc_mean = (np.sum(auc_epochs) - np.max(auc_epochs) - np.min(auc_epochs)) / (test_num-2)
-print(f"average compat AUC is {auc_mean} ")
+diff_acc_mean = (np.sum(diff_epochs) - np.max(diff_epochs) - np.min(diff_epochs)) / (test_num-2)
+print(f"average compat AUC is {auc_mean} , average diff auc is {diff_acc_mean}")
 
 # fitb测试
 for option_len in [4, 5, 6]:
@@ -129,7 +134,7 @@ for option_len in [4, 5, 6]:
             images = torch.stack(images).to(device)
             names = torch.stack([name] * (option_len-1)).to(device)
             # print("names.shape", names.shape)
-            _, _, difference_score, _, _ = model(images, names)
+            _, _, difference_score, _, _, pos_out, neg_out = model(images, names)
 
             difference_score_true = (difference_score >= 0)
             difference_score_sum = torch.sum(difference_score_true.float())

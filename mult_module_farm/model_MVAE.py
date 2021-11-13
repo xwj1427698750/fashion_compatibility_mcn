@@ -267,9 +267,9 @@ class Encoder(nn.Module):
             nn.Conv2d(in_channels=512, out_channels=1024, kernel_size=4, stride=1, padding=0),  # batch_size*1024*1*1
             nn.BatchNorm2d(1024),
             nn.ReLU(),
-            nn.Flatten(),  # batch_size*1024
         )
         self.get_feature3 = nn.Sequential(
+            nn.Flatten(),
             nn.Linear(1024, output_size),
             nn.Sigmoid(),
         )
@@ -285,9 +285,9 @@ class Encoder(nn.Module):
         feature2 = self.get_feature2(enc2)
         enc3 = self.conv3(enc2)
         feature3 = self.get_feature3(enc3)
-        enc_drop = self.dropout(enc3)
+        enc_drop = self.dropout(enc3.flatten(start_dim=1))
         out = self.fc(enc_drop)
-        return out, feature3, feature2, feature1   # 3到1， 离原始图像越近
+        return out, feature3, feature2, feature1, [enc1, enc2, enc3]   # 3到1， 离原始图像越近, encx = [batch_size,512|512|1024,1,1]
 
 class FeatureFusion(nn.Module):
     def __init__(self, item_input_size=100, output_size=100):
@@ -421,8 +421,112 @@ class Generator(nn.Module):
         high_resolution_img = self.conv6(low_to_mid + mid_to_high)  # 高分辨率
         return low_resolution_img, high_resolution_img, [feature1, feature2, feature3]  # features : [3 batch_size, 100] # 1到3 离原始图像越近
 
+
+class MLMSFF(nn.Module):
+    def __init__(self):
+        super(MLMSFF, self).__init__()
+        # 多尺度融合层每一层的卷积核
+        self.filter_sizes = [2, 3, 4]
+        layer_feature_weights = [512, 512, 1024]
+        rep_weight = 9  # 套装的个数，正常是4，如果将套装复制然后拼接了一次，就可以得到8了 ,又加了第一件，为了能够获得所有的22组合，33组合
+        self.layer_deep1_convs = nn.ModuleList()  # 3 x 3 , 一共有3层, 每一层有3个卷积核
+        self.layer_deep2_convs = nn.ModuleList()  # 3 x 3 , 一共有3层, 每一层有3个卷积核
+        for i in range(len(layer_feature_weights)):
+            multi_convs = nn.ModuleList()
+            multi_convs2 = nn.ModuleList()
+            for size in self.filter_sizes:
+                conv_net = nn.Sequential(
+                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(1, size * size)),
+                    nn.BatchNorm2d(1),
+                    nn.LeakyReLU(),
+                    nn.AvgPool2d(kernel_size=(rep_weight - size + 1, rep_weight // 2 - size + 1)),
+                    nn.Flatten(),
+                )
+                multi_convs.append(conv_net)
+
+                conv_net2 = nn.Sequential(
+                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(1, size * size)),
+                    nn.BatchNorm2d(1),
+                    nn.ReLU(),
+                    nn.AvgPool2d(kernel_size=(rep_weight - size + 1, rep_weight // 2 - size + 1)),
+                    nn.Flatten(),
+                )
+                multi_convs2.append(conv_net2)
+            self.layer_deep1_convs.append(multi_convs)
+            self.layer_deep2_convs.append(multi_convs2)
+
+        # 多尺度融合模块
+        self.layer_convs_fcs = nn.ModuleList()
+        fashion_item_rep_len = [0, 512, 512, 1024]
+        fcs_output_size = [0, 64, 64, 64]
+        for i in range(1, len(fashion_item_rep_len)):
+            rep_len = fashion_item_rep_len[i]
+            input_size = 0
+            for size in self.filter_sizes:
+                stride = size * size
+                wi = (rep_len - size) // stride + 1
+                hi = (4 - size) + 1
+                # 卷积之后的池化操作, 对张量产生的影响
+                wi = wi // hi
+                hi = 1
+                input_size = input_size + hi * wi
+            input_size = input_size * 2 + fcs_output_size[i - 1]
+            output_size = fcs_output_size[i]
+
+            linear = nn.Linear(input_size, output_size)
+            linear2 = nn.Linear(output_size, output_size)
+            multi_scale_fc = nn.Sequential(linear, nn.ReLU(), linear2)
+            self.layer_convs_fcs.append(multi_scale_fc)
+
+        self.multi_layer_predictor = nn.Sequential(
+            nn.Linear(64, 1),
+            nn.Sigmoid()
+        )
+        # 网络参数初始化
+        to_init_net = [self.multi_layer_predictor, self.layer_convs_fcs, self.layer_deep1_convs, self.layer_deep2_convs]
+        for net in to_init_net:
+            for m in net.modules():
+                if isinstance(m, (nn.Conv2d, nn.Linear)):
+                    nn.init.xavier_uniform_(m.weight)
+                    nn.init.constant_(m.bias, 0)
+
+    def forward(self, rep_list):
+        """
+        rep_list为正样本套装或者负样本套装
+        """
+        # 多尺度融合
+        multi_scale_concats = []
+        for i, rep_li in enumerate(rep_list):
+            shape = rep_li.shape
+            rep_li = rep_li.reshape(shape[0], 1, shape[1], -1)  # (64, 1, 4, 512|512|1024)
+            shape = rep_li.shape
+            rep_li_copy = torch.cat((rep_li[:, :, 0, :], rep_li[:, :, 2, :], rep_li[:, :, 1, :], rep_li[:, :, 3, :],
+                                     rep_li[:, :, 0, :]), 2).reshape(shape[0], shape[1], shape[2] + 1, shape[3])
+            rep_li_double = torch.cat((rep_li, rep_li_copy), 2)  # (16,1,9,512), rep_l2 (16,1,9,512), rep_l3 (16,1,9,1024)
+
+            multi_scale_li_feature = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_deep1_convs[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
+            cat_feature1 = torch.cat(multi_scale_li_feature, 1)
+            # cat_feature [[batch_size ,(42 + 28 + 32)], [batch_size , (42 + 28 + 32)], [batch_size ,(85 + 57 + 64)])]
+
+            multi_scale_li_feature2 = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_deep2_convs[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
+            cat_feature2 = torch.cat(multi_scale_li_feature2, 1)
+            # cat_feature [[batch_size ,(42 + 28 + 32)*2], [batch_size ,(42 + 28 + 32)*2], [batch_size ,(85 + 57 + 64)*2])]
+
+            cat_feature_fuse = torch.cat((cat_feature1, cat_feature2), 1)
+            multi_scale_concats.append(cat_feature_fuse)
+
+        # 多层级特征融合
+        layer1_to_2 = F.relu(self.layer_convs_fcs[0](multi_scale_concats[0]))  # [16, 64]
+        layer2_concat_layer1 = torch.cat((layer1_to_2, multi_scale_concats[1]), 1)
+        layer2_to_3 = F.relu(self.layer_convs_fcs[1](layer2_concat_layer1) + layer1_to_2)  # [16, 64]
+        layer3_concat_layer2 = torch.cat((layer2_to_3, multi_scale_concats[2]), 1)
+        layer3_to_out = F.relu(self.layer_convs_fcs[2](layer3_concat_layer2) + layer2_to_3)  # [16, 64]
+
+        out = self.multi_layer_predictor(layer3_to_out)
+        return out
+
 class MultiModuleGenerator(nn.Module):
-    def __init__(self, vocabulary=None, num_attention_heads=0, device=torch.device("cuda:0"), ):
+    def __init__(self, vocabulary=None, num_attention_heads=0, device=torch.device("cuda:0"), feature_size=100):
         """ The Multi-Module-Generator for fashion item generator.
         Args:
             embed_size: the output embedding size of the cnn model, default 1000.
@@ -436,7 +540,7 @@ class MultiModuleGenerator(nn.Module):
             conv_feats: decide which layer of conv features are used for comparision.
         """
         super(MultiModuleGenerator, self).__init__()
-        feature_size = 100
+        # feature_size = 100
         self.type_to_id = {'upper': 0, 'bottom': 1, 'bag': 2, 'shoe': 3}
         self.device = device
         self.get_desc_embedding = nn.Sequential(
@@ -454,6 +558,11 @@ class MultiModuleGenerator(nn.Module):
         self.transformer = Transformer(item_input_size=feature_size, output_size=feature_size)
 
         self.generator = Generator(item_input_size=feature_size, output_size=feature_size)
+
+        # Global average pooling layer
+        self.ada_avgpool2d = nn.AdaptiveAvgPool2d((1, 1))
+
+        self.get_compat_prob = MLMSFF()
 
         to_init_modules = [self.get_desc_embedding, self.encoder, self.get_feature_fuse, self.transformer, self.generator]
         if num_attention_heads > 0:
@@ -509,6 +618,20 @@ class MultiModuleGenerator(nn.Module):
         difference_score = score_pos - score_neg
         return difference_score  # (batch_size)
 
+    # 获得正负样本的特征
+    def get_pos_neg_outfit(self, rep_list, batch_size=64, item_num=5,):
+        """
+        输入：rep_list含有3层的特征,尺寸为 (batch_size:64 * item_num:5, 512|512|1024, x, x)
+        输出： pos_outfit[(batch_size:64 ,item_num:4, 512|512|1024)]*3, neg_outfit[(batch_size:64 ,item_num:4, 512|512|1024)*3]
+        """
+        pos_outfit, neg_outfit = [], []
+        for i, rep_li in enumerate(rep_list):
+            rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, item_num, -1)  # (batch_size:64 , item_num:5, 512|512|1024)
+            pos_outfit.append(rep_li[:, :4, :])  # 前4件为正样本
+            neg_outfit.append(torch.cat((rep_li[:, :3, :], rep_li[:, 4:, :]), 1))
+        return pos_outfit, neg_outfit
+
+
     def forward(self, images, names):
         """
         Args:
@@ -521,7 +644,7 @@ class MultiModuleGenerator(nn.Module):
             tmasks_loss: mask loss to encourage a sparse mask
             features_loss: regularize the feature vector to be normal
         """
-        batch_size, item_num, _, _, img_size = images.shape  # (16, 5, 3, 128, 128) item_num = 5,有4个正的,1个负的 第4件为目标正单品，第5件为目标负单品
+        batch_size, item_num, _, _, img_size = images.shape  # (64, 5, 3, 128, 128) item_num = 5,有4个正的,1个负的 第4件为目标正单品，第5件为目标负单品
         images = torch.reshape(images, (-1, 3, img_size, img_size))  # (batch_size*item_num->16*5, 3, 128, 128)
         # outfit_pos = images[:, :4, :, :, :]  # 正样本 (8, 4, 3, 224, 224)
         #
@@ -531,7 +654,7 @@ class MultiModuleGenerator(nn.Module):
 
         enc_desc = self.get_desc_embedding(names)  # (batch_size, 100)
 
-        enc, layer3, layer2, layer1 = self.encoder(images)  # (batch_size*item_num->16*5, 100)
+        enc, layer3, layer2, layer1, rep_list = self.encoder(images)  # (batch_size*item_num->16*5, 100)
         enc = torch.reshape(enc, (batch_size, item_num, -1)).transpose(0, 1)  # (batch_size, item_num, 100) ---> (item_num, batch_size, 100)
         layer3 = torch.reshape(layer3, (batch_size, item_num, -1)).transpose(0, 1)  # 含有单个位置，所有batch的张量
         layer2 = torch.reshape(layer2, (batch_size, item_num, -1)).transpose(0, 1)
@@ -558,8 +681,14 @@ class MultiModuleGenerator(nn.Module):
 
         difference_pn = self.get_layer_feature_score(enc, feature_x1, feature_x2, feature_x3, feature_yp, feature_yn, enc_x, enc_desc, feature_yg)  # (batch_size,)
 
+        # mlmsff 分类模型
+        pos_outfit, neg_outfit = self.get_pos_neg_outfit(rep_list, batch_size=batch_size)
+        pos_out = self.get_compat_prob(pos_outfit)
+        neg_out = self.get_compat_prob(neg_outfit)
+
+
         # (3,128,128), (3,128,128), (batch_size,), (batch_size, 100), (batch_size, 100)
-        return low_resolution_img, high_resolution_img, difference_pn, z_mean, z_log_var
+        return low_resolution_img, high_resolution_img, difference_pn, z_mean, z_log_var, pos_out, neg_out
 
 if __name__ == "__main__":
 
