@@ -19,10 +19,10 @@ parser = argparse.ArgumentParser(description='Fashion Compatibility Training.')
 parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--generator_type', type=str, default="mix")
-parser.add_argument('--comment', type=str, default="generator_fuse_farm_atten(head_num=8)_mlmsff_(feature_size=128)")
+parser.add_argument('--comment', type=str, default="generator_fuse_farm_atten(head_num=4)_(lr=1000)")
 parser.add_argument('--clip', type=int, default=5)
-parser.add_argument('--num_attention_heads', type=int, default=8)
-parser.add_argument('--feature_size', type=int, default=128)
+parser.add_argument('--num_attention_heads', type=int, default=4)
+parser.add_argument('--feature_size', type=int, default=96)
 args = parser.parse_args()
 
 print(args)
@@ -114,8 +114,8 @@ def train(model, device, train_loader, val_loader, comment):
             # mix_true_acc.update(mix_true_sum, batch_size)
 
             # Generator LOSS
-            l1_loss_param = 100
-            l2_loss_param = 100
+            l1_loss_param = 1000
+            l2_loss_param = 1000
 
             l2_loss = l1_loss_param * get_l2_loss(low_resolution_img, generator_target_img)
             l1_loss = l2_loss_param * get_l1_loss(high_resolution_img, generator_target_img)
@@ -125,8 +125,8 @@ def train(model, device, train_loader, val_loader, comment):
 
 
             # Sum all losses up
-            total_loss = clf_loss + bpr_loss + l2_loss + l1_loss + kl_loss
-            # total_loss = bpr_loss + l2_loss + l1_loss + kl_loss
+            # total_loss = clf_loss + bpr_loss + l2_loss + l1_loss + kl_loss
+            total_loss = bpr_loss + l2_loss + l1_loss + kl_loss
 
             # Update Recoder
             clf_losses.update(clf_loss.item(), images.shape[0])

@@ -14,21 +14,13 @@ from model_MVAE import MultiModuleGenerator
 # Leave a comment for this training, and it will be used for name suffix of log and saved model
 import argparse
 parser = argparse.ArgumentParser(description='Fashion Compatibility Evaluation.')
-parser.add_argument('--vse_off', action="store_true")
-parser.add_argument('--pe_off', action="store_true")
-parser.add_argument('--mlp_layers', type=int, default=2)
-parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--model_path', type=str, default="./data_mix_model_diff_acc_train_generator_fuse_farm_atten(head_num=1)_mlmsff_(feature_size=128).pth")
+parser.add_argument('--model_path', type=str, default="./data_mix_model_diff_acc_train_generator_fuse_farm_atten(head_num=4)_mlmsff_(feature_size=96).pth")
 parser.add_argument('--generator_type', type=str, default="mix")
-parser.add_argument('--num_attention_heads', type=int, default=1)
-parser.add_argument('--feature_size', type=int, default=128)
+parser.add_argument('--num_attention_heads', type=int, default=4)
+parser.add_argument('--feature_size', type=int, default=96)
 args = parser.parse_args()
 
 print(args)
-vse_off = args.vse_off
-pe_off = args.pe_off
-mlp_layers = args.mlp_layers
-conv_feats = args.conv_feats
 model_path = args.model_path
 generator_type = args.generator_type
 num_attention_heads = args.num_attention_heads
