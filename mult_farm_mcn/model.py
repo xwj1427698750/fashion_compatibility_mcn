@@ -11,7 +11,7 @@ from resnet import resnet50
 
 class CompatModel(nn.Module):
     def __init__(self, embed_size=1000, need_rep=False, vocabulary=None,
-                 vse_off=False, pe_off=False, mlp_layers=2, conv_feats="1234",):
+                 vse_off=False, pe_off=False, mlp_layers=2, conv_feats="1234", layer_feature_size=64):
         """The Multi-Layered Comparison Network (MCN) for outfit compatibility prediction and diagnosis.
         Args:
             embed_size: the output embedding size of the cnn model, default 1000.
@@ -156,7 +156,7 @@ class CompatModel(nn.Module):
 
         self.layer_convs_fcs = nn.ModuleList()
         fashion_item_rep_len = [0, 256, 512, 1024, 2048]
-        fcs_output_size = [0, 64, 64, 64, 64]
+        fcs_output_size = [0, layer_feature_size, layer_feature_size, layer_feature_size, layer_feature_size]
         for i in range(1, len(fashion_item_rep_len)):
             rep_len = fashion_item_rep_len[i]
             input_size = 0
@@ -176,7 +176,7 @@ class CompatModel(nn.Module):
             multi_scale_fc = nn.Sequential(linear, nn.ReLU(), linear2)
             self.layer_convs_fcs.append(multi_scale_fc)
 
-        self.multi_layer_predictor = nn.Linear(64, 1)
+        self.multi_layer_predictor = nn.Linear(layer_feature_size, 1)
         # 网络参数初始化
         to_init_net = [self.multi_layer_predictor, self.layer_convs_fcs, self.layer_deep1_convs, self.layer_deep2_convs,
                        self.layer_wide_convs, self.cnn.fc]

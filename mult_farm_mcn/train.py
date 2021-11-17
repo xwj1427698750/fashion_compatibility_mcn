@@ -20,8 +20,9 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--comment', type=str, default="v5_deep_scale(double_conv)_xavir")
+parser.add_argument('--comment', type=str, default="v5_deep_scale(double_conv)_xavir_(layer_feature_size=160)")
 parser.add_argument('--clip', type=int, default=5)
+parser.add_argument('--layer_feature_size', type=int, default=160)
 args = parser.parse_args()
 
 print(args)
@@ -31,6 +32,8 @@ pe_off = args.pe_off
 mlp_layers = args.mlp_layers
 conv_feats = args.conv_feats
 clip = args.clip
+layer_feature_size = args.layer_feature_size
+
 # Logger
 config_logging(comment)
 
@@ -44,7 +47,7 @@ device = torch.device("cuda:0")
 
 # Model
 model = CompatModel(embed_size=1000, need_rep=True, vocabulary=len(train_dataset.vocabulary),
-                    vse_off=vse_off, pe_off=pe_off, mlp_layers=mlp_layers, conv_feats=conv_feats)
+                    vse_off=vse_off, pe_off=pe_off, mlp_layers=mlp_layers, conv_feats=conv_feats, layer_feature_size=layer_feature_size)
 
 # Train process
 def train(model, device, train_loader, val_loader, comment):
