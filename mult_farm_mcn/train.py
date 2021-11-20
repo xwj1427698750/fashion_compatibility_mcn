@@ -20,7 +20,7 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--comment', type=str, default="v5_deep_scale(double_conv)_xavir_(layer_feature_size=160)")
+parser.add_argument('--comment', type=str, default="v5_deep_scale(double_conv)_xavir_(layer_feature_size=160)_3_1")
 parser.add_argument('--clip', type=int, default=5)
 parser.add_argument('--layer_feature_size', type=int, default=160)
 args = parser.parse_args()
@@ -43,7 +43,7 @@ train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader 
 )
 
 # Device
-device = torch.device("cuda:0")
+device = torch.device("cuda:1")
 
 # Model
 model = CompatModel(embed_size=1000, need_rep=True, vocabulary=len(train_dataset.vocabulary),

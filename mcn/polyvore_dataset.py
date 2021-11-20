@@ -48,19 +48,54 @@ class CategoryDataset(Dataset):
                     self.word_to_idx[name] = len(self.word_to_idx)
                     self.vocabulary.append(name)
 
+    # def __getitem__(self, index):
+    #     """It could return a positive suits or negative suits"""
+    #     set_id, parts = self.data[index]
+    #     if random.randint(0, 1) and self.neg_samples: #random.randint(0, 1) 随机生成0和1
+    #         #to_change = random.sample(list(parts.keys()), 3) # random choose 3 negative items
+    #         to_change = list(parts.keys()) # random choose negative items
+    #     else:
+    #         to_change = []
+    #     imgs = []
+    #     labels = []
+    #     names = []
+    #     for part in ['upper', 'bottom', 'shoe', 'bag']:
+    #         if part in to_change: # random choose a image from dataset with same category
+    #             choice = self.data[index]
+    #             while (choice[0] == set_id) or (part not in choice[1].keys()):
+    #                 choice = random.choice(self.data)
+    #             img_path = os.path.join(self.root_dir, str(choice[1][part]['index'])+'.jpg')
+    #             names.append(torch.LongTensor(self.str_to_idx(choice[1][part]['name'])))
+    #             labels.append('{}_{}'.format(choice[0], choice[1][part]['index']))
+    #         elif part in parts.keys():
+    #             img_path = os.path.join(self.root_dir, str(parts[part]['index'])+'.jpg')
+    #             names.append(torch.LongTensor(self.str_to_idx(parts[part]['name'])))
+    #             labels.append('{}_{}'.format(set_id, parts[part]['index']))
+    #         else:
+    #             continue
+    #         img = Image.open(img_path).convert('RGB')
+    #         img = self.transform(img)
+    #         imgs.append(img)
+    #     input_images = torch.stack(imgs)  # 沿着第0维度拼接图片 [N,C,H,W], N = len(imgs)
+    #     is_compat = (len(to_change) == 0)
+    #     # list(itertools.accumulate([1,2,3,4])) --> [1, 3, 6, 10]
+    #     offsets = list(itertools.accumulate([0] + [len(n) for n in names[:-1]]))  # 除了names的最后一个
+    #     offsets = torch.LongTensor(offsets)
+    #     return input_images, names, offsets, set_id, labels, is_compat
+
     def __getitem__(self, index):
         """It could return a positive suits or negative suits"""
         set_id, parts = self.data[index]
         if random.randint(0, 1) and self.neg_samples: #random.randint(0, 1) 随机生成0和1
             #to_change = random.sample(list(parts.keys()), 3) # random choose 3 negative items
-            to_change = list(parts.keys()) # random choose negative items
+            to_change = [random.randint(0, 3)]  # 随机选择一个负样本
         else:
             to_change = []
         imgs = []
         labels = []
         names = []
         for part in ['upper', 'bottom', 'shoe', 'bag']:
-            if part in to_change: # random choose a image from dataset with same category
+            if part in to_change:  # random choose a image from dataset with same category
                 choice = self.data[index]
                 while (choice[0] == set_id) or (part not in choice[1].keys()):
                     choice = random.choice(self.data)

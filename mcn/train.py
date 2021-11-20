@@ -20,7 +20,7 @@ parser.add_argument('--vse_off', action="store_true")
 parser.add_argument('--pe_off', action="store_true")
 parser.add_argument('--mlp_layers', type=int, default=2)
 parser.add_argument('--conv_feats', type=str, default="1234")
-parser.add_argument('--comment', type=str, default="")
+parser.add_argument('--comment', type=str, default="3_1")
 args = parser.parse_args()
 
 print(args)
