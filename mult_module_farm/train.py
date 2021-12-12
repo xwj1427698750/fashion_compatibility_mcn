@@ -114,8 +114,8 @@ def train(model, device, train_loader, val_loader, comment):
             # mix_true_acc.update(mix_true_sum, batch_size)
 
             # Generator LOSS
-            l1_loss_param = 1000
-            l2_loss_param = 1000
+            l1_loss_param = 100
+            l2_loss_param = 100
 
             l2_loss = l1_loss_param * get_l2_loss(low_resolution_img, generator_target_img)
             l1_loss = l2_loss_param * get_l1_loss(high_resolution_img, generator_target_img)

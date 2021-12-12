@@ -564,6 +564,16 @@ class MultiModuleGenerator(nn.Module):
 
         self.get_compat_prob = MLMSFF()
 
+        # 多层级特征交互模块目标单品与给定单品之间的交互空间转换矩阵
+        self.layers = nn.ModuleList()
+        for i in range(3):
+            net = nn.Sequential(
+                nn.Linear(feature_size, feature_size),
+                nn.ReLU(),
+                # LayerNorm(hidden_size=feature_size),
+            )
+            self.layers.append(net)
+
         to_init_modules = [self.get_desc_embedding, self.encoder, self.get_feature_fuse, self.transformer, self.generator]
         if num_attention_heads > 0:
             to_init_modules.append(self.attention_fuse)
@@ -601,18 +611,18 @@ class MultiModuleGenerator(nn.Module):
         """
         enc_yp, enc_yn = enc[3], enc[4]  # enc_yp 表示目标单品正样本最后一层特征， enc_yn 表示目标单品负样本最后一层特征，尺寸都是batch_size, 100
 
-        score_pos = torch.sum(enc_yp * enc_x, dim=1) + torch.sum(enc_yp * enc_desc, dim=1)  # 尺寸是(batch_size,)
-        score_neg = torch.sum(enc_yn * enc_x, dim=1) + torch.sum(enc_yn * enc_desc, dim=1)
+        score_pos = torch.tensor(0) #+ torch.sum(enc_yp * enc_desc, dim=1) + torch.sum(enc_yp * enc_x, dim=1)  #   #尺寸是(batch_size,)
+        score_neg = torch.tensor(0) #+ torch.sum(enc_yn * enc_desc, dim=1) + torch.sum(enc_yn * enc_x, dim=1)  #
         for i in range(len(feature_yg)):    # 共3层的特征
             score_pos = score_pos + torch.sum(feature_yp[i] * feature_yg[i], dim=1)  # [batch_size,]
-            score_pos = score_pos + torch.sum(feature_yp[i] * feature_x1[i], dim=1)  # [batch_size,]
-            score_pos = score_pos + torch.sum(feature_yp[i] * feature_x2[i], dim=1)  # [batch_size,]
-            score_pos = score_pos + torch.sum(feature_yp[i] * feature_x3[i], dim=1)  # [batch_size,]
+            score_pos = score_pos + torch.sum(feature_yp[i] * self.layers[i](feature_x1[i]), dim=1)  # [batch_size,]
+            score_pos = score_pos + torch.sum(feature_yp[i] * self.layers[i](feature_x2[i]), dim=1)  # [batch_size,]
+            score_pos = score_pos + torch.sum(feature_yp[i] * self.layers[i](feature_x3[i]), dim=1)  # [batch_size,]
 
-            score_neg = score_neg + torch.sum(feature_yn[i] * feature_yg[i], dim=1)  # [batch_size, ]
-            score_neg = score_neg + torch.sum(feature_yn[i] * feature_x1[i], dim=1)  # [batch_size, ]
-            score_neg = score_neg + torch.sum(feature_yn[i] * feature_x2[i], dim=1)  # [batch_size, ]
-            score_neg = score_neg + torch.sum(feature_yn[i] * feature_x3[i], dim=1)  # [batch_size, ]
+            score_neg = score_neg + torch.sum(feature_yn[i] * feature_yg[i], dim=1) # [batch_size,]
+            score_neg = score_neg + torch.sum(feature_yn[i] * self.layers[i](feature_x1[i]), dim=1)  # [batch_size,]
+            score_neg = score_neg + torch.sum(feature_yn[i] * self.layers[i](feature_x2[i]), dim=1)  # [batch_size,]
+            score_neg = score_neg + torch.sum(feature_yn[i] * self.layers[i](feature_x3[i]), dim=1)  # [batch_size,]
 
 
         difference_score = score_pos - score_neg
