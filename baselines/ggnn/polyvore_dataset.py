@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader, Dataset
 import dgl
 
 class CategoryDataset(Dataset):
-    """Dataset for polyvore with 5 categories(upper, bottom, shoe, bag, accessory),
+    """Dataset for polyvore with 4 categories(upper, bottom, shoe, bag),
     each suit has at least 3 items, the missing items will use a mean image.
 
     Args:
@@ -28,121 +28,107 @@ class CategoryDataset(Dataset):
         use_mean_img: Whether to use mean images to fill the blank part
         neg_samples: Whether generate negative sampled outfits
     """
-    def __init__(self,
-                 root_dir="../../data/images/",
-                 data_file='train_no_dup_with_category_3more_name.json',
-                 data_dir="../../data",
-                 transform=None,
-                 use_mean_img=True,
-                 neg_samples=True):
+
+    def __init__(self, root_dir="../data/images2/",
+                 data_file='train.json',
+                 data_dir="../data", transform=None, use_mean_img=True, neg_samples=True):
         self.root_dir = root_dir
         self.data_dir = data_dir
         self.transform = transform
         self.use_mean_img = use_mean_img
         self.data = json.load(open(os.path.join(data_dir, data_file)))
-        self.data = [(k, v) for k, v in self.data.items()]
-        self.neg_samples = neg_samples # if True, will randomly generate negative outfit samples
-    
+        self.data = [(k, v) for k, v in self.data.items()]  # k:套装id,v:{套装对象}
+        self.neg_samples = neg_samples  # if True, will randomly generate negative outfit samples
+
         self.vocabulary, self.word_to_idx = [], {}
         self.word_to_idx['UNK'] = len(self.word_to_idx)
         self.vocabulary.append('UNK')
-        with open(os.path.join(self.data_dir, 'final_word_dict.txt')) as f:
+        with open(os.path.join(self.data_dir, 'vocab.dat')) as f:
             for line in f:
                 name = line.strip().split()[0]
                 if name not in self.word_to_idx:
                     self.word_to_idx[name] = len(self.word_to_idx)
                     self.vocabulary.append(name)
 
-
     def __getitem__(self, index):
         """It could return a positive suits or negative suits"""
         set_id, parts = self.data[index]
-        if random.randint(0, 1) and self.neg_samples:
-            #to_change = random.sample(list(parts.keys()), 3) # random choose 3 negative items
-            to_change = list(parts.keys()) # random choose negative items
+        if random.randint(0, 1) and self.neg_samples:  # random.randint(0, 1) 随机生成0和1
+            # to_change = random.sample(list(parts.keys()), 3) # random choose 3 negative items
+            to_change = list(parts.keys())  # random choose negative items
         else:
             to_change = []
         imgs = []
         labels = []
         names = []
-        for part in ['upper', 'bottom', 'shoe', 'bag', 'accessory']:
-            if part in to_change: # random choose a image from dataset with same category
+        for part in ['upper', 'bottom', 'shoe', 'bag']:
+            if part in to_change:  # random choose a image from dataset with same category
                 choice = self.data[index]
                 while (choice[0] == set_id) or (part not in choice[1].keys()):
                     choice = random.choice(self.data)
-                img_path = os.path.join(self.root_dir, str(choice[0]), str(choice[1][part]['index'])+'.jpg')
+                img_path = os.path.join(self.root_dir, str(choice[1][part]['index']) + '.jpg')
                 names.append(torch.LongTensor(self.str_to_idx(choice[1][part]['name'])))
                 labels.append('{}_{}'.format(choice[0], choice[1][part]['index']))
             elif part in parts.keys():
-                img_path = os.path.join(self.root_dir, str(set_id), str(parts[part]['index'])+'.jpg')
+                img_path = os.path.join(self.root_dir, str(parts[part]['index']) + '.jpg')
                 names.append(torch.LongTensor(self.str_to_idx(parts[part]['name'])))
                 labels.append('{}_{}'.format(set_id, parts[part]['index']))
-            elif self.use_mean_img:
-                img_path = os.path.join(self.data_dir, part+'.png')
-                names.append(torch.LongTensor([])) # mean_img embedding
-                labels.append('{}_{}'.format(part, 'mean'))
             else:
                 continue
             img = Image.open(img_path).convert('RGB')
             img = self.transform(img)
             imgs.append(img)
-        input_images = torch.stack(imgs)
-        is_compat = (len(to_change)==0)
-
-        offsets = list(itertools.accumulate([0] + [len(n) for n in names[:-1]]))
+        input_images = torch.stack(imgs)  # 沿着第0维度拼接图片 [N,C,H,W], N = len(imgs)
+        is_compat = (len(to_change) == 0)
+        # list(itertools.accumulate([1,2,3,4])) --> [1, 3, 6, 10]
+        offsets = list(itertools.accumulate([0] + [len(n) for n in names[:-1]]))  # 除了names的最后一个
         offsets = torch.LongTensor(offsets)
         return input_images, names, offsets, set_id, labels, is_compat
 
     def __len__(self):
         return len(self.data)
 
+    """ 根据文本描述的长度返回对应长度的向量 """
+
     def str_to_idx(self, name):
         return [self.word_to_idx[w] if w in self.word_to_idx else self.word_to_idx['UNK']
-            for w in name.split()]
+                for w in name.split()]
 
-    def get_fitb_quesiton(self, index):
+    def get_fitb_quesiton(self, index, option_len=4):
         """Generate fill in th blank questions.
         Return:
             images: 5 parts of a outfit
             labels: store if this item is empty
             question_part: which part to be changed
             options: 3 other item with the same category,
-                expect original composition get highest score
+            expect original composition get highest score
         """
         set_id, parts = self.data[index]
-        question_part = random.choice(list(parts))
+        question_part = random.choice(list(parts))  # 从parts中随机选择一个 ，获得parts中的keys形成的列表
         question_id = "{}_{}".format(set_id, parts[question_part]['index'])
         imgs = []
         labels = []
         exist_parts = []
-        for part in ['upper', 'bottom', 'shoe', 'bag', 'accessory']:
+        for part in ['upper', 'bottom', 'shoe', 'bag']:
             if part in parts.keys():
                 exist_parts.append(part)
-                img_path = os.path.join(self.root_dir, str(set_id), str(parts[part]['index'])+'.jpg')
+                img_path = os.path.join(self.root_dir, str(parts[part]['index']) + '.jpg')
                 img = Image.open(img_path).convert('RGB')
                 img = self.transform(img)
                 imgs.append(img)
                 labels.append('{}_{}'.format(set_id, parts[part]['index']))
-            elif self.use_mean_img:
-                img_path = os.path.join(self.data_dir, part+'.png')
-                img = Image.open(img_path).convert('RGB')
-                img = self.transform(img)
-                imgs.append(img)
-                labels.append('{}_{}'.format(part, 'mean'))
-        items = torch.stack(imgs)
+        items = torch.stack(imgs)  # 正确的搭配
 
         option_ids = [set_id]
         options = []
         option_labels = []
-        while len(option_ids) < 4:
+        while len(option_ids) < option_len:
             option = random.choice(self.data)
             if (option[0] in option_ids) or (question_part not in option[1]):
                 continue
             else:
                 option_ids.append(option[0])
-                img_path = os.path.join(self.root_dir, \
-                                        str(option[0]), \
-                                        str(option[1][question_part]['index'])+'.jpg')
+                img_path = os.path.join(self.root_dir, str(option[1][question_part]['index']) + '.jpg')
                 img = Image.open(img_path).convert('RGB')
                 img = self.transform(img)
                 options.append(img)

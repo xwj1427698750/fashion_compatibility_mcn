@@ -21,13 +21,13 @@ config_logging(comment)
 
 # Dataloader
 train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader = prepare_dataloaders(
-    root_dir="../../data/images",
+    root_dir="../../data/images2",
     data_dir="../../data",
     batch_size=12
 )
 
 # Device
-device = torch.device("cuda:0")
+device = torch.device("cuda:1")
 
 # Model
 model = CompatModel(embed_size=1000, need_rep=True, vocabulary=len(train_dataset.vocabulary))

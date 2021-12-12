@@ -13,15 +13,15 @@ from model import CompatModel
 
 # Dataloader
 train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader = prepare_dataloaders(
-    root_dir="../../data/images",
+    root_dir="../../data/images2",
     data_dir="../../data",
     batch_size=12
 )
 
 # Load pretrained weights
-device = torch.device("cuda:0")
+device = torch.device("cuda:1")
 model = CompatModel(embed_size=1000, need_rep=True, vocabulary=len(train_dataset.vocabulary)).to(device)
-# model.load_state_dict(torch.load("./model_train.pth"))
+model.load_state_dict(torch.load("./model_attention_train.pth"))
 criterion = nn.BCELoss()
 
 # Compatibility AUC test
@@ -55,7 +55,7 @@ for i in range(len(test_dataset)):
     items, labels, question_part, question_id, options, option_labels = test_dataset.get_fitb_quesiton(
         i
     )
-    question_part = {"upper": 0, "bottom": 1, "shoe": 2, "bag": 3, "accessory": 4}.get(
+    question_part = {"upper": 0, "bottom": 1, "shoe": 2, "bag": 3}.get(
         question_part
     )
     images = [items]
@@ -65,7 +65,7 @@ for i in range(len(test_dataset)):
         new_outfit[question_part] = option
         images.append(new_outfit)
     images = torch.stack(images).to(device)
-    output, _, _, _ = model._compute_score(images)
+    output, _, _ = model._compute_score(images)
 
     if output.argmax().item() == 0:
         is_correct.append(True)

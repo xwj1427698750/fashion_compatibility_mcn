@@ -19,7 +19,7 @@ from Resnet_18 import resnet18
 # Hyperparameters
 img_size = 112
 emb_size = 64
-device = torch.device("cuda")
+device = torch.device("cuda:1")
 
 
 # Helper functions
@@ -54,7 +54,7 @@ def test_compatibility_auc(test_auc_dataset, embeddingnet):
     return auc
 
 
-def test_fitb_quesitons(test_fitb_dataset, embeddingnet):
+def test_fitb_quesitons(test_fitb_dataset, embeddingnet, option_len=4):
     """ Compute accuracy of correctly answering the fill-in-the-blank questions
     """
     is_correct = []
@@ -71,7 +71,7 @@ def test_fitb_quesitons(test_fitb_dataset, embeddingnet):
             ],
             requires_grad=False,
         ).to(device)
-        items, labels, question_part, question_id, options, option_labels = test_fitb_dataset.get_fitb_quesiton(i)
+        items, labels, question_part, question_id, options, option_labels = test_fitb_dataset.get_fitb_quesiton(i, option_len=option_len)
         question_part = {
             "upper": 0,
             "bottom": 1,
@@ -114,7 +114,7 @@ def calc_outfit_score(images, labels, conditions, embeddingnet):
     mask = []
     outfit_score = 0.0
 
-    for a, b in itertools.combinations(range(0, 5), 2):
+    for a, b in itertools.combinations(range(0, 4), 2):
         if labels[a] == 0 or labels[b] == 0:
             mask.append(0)
         else:
@@ -129,7 +129,7 @@ def calc_outfit_score(images, labels, conditions, embeddingnet):
     conds = torch.stack(conds)
     with torch.no_grad():
         embs = embeddingnet(inputs, conds)[0]
-    embs = embs.reshape(10, 2, -1)
+    embs = embs.reshape(8, 2, -1)
     embs = F.normalize(embs, dim=2)
     dist = F.pairwise_distance(embs[:, 0, :], embs[:, 1, :])
     mask = torch.tensor(mask).float().to(device)
@@ -152,16 +152,16 @@ def main():
         ]
     )
     train_dataset = TripletDataset(
-        root_dir="../../data/images/",
+        root_dir="../../data/images2/",
         data_dir="../../data/",
         transform=transform
     )
     test_auc_dataset = CategoryDataset(
-        root_dir="../../data/images/",
+        root_dir="../../data/images2/",
         data_dir="../../data/",
         transform=transform,
         use_mean_img=True,
-        data_file="test_no_dup_with_category_3more_name.json",
+        data_file="test.json",
         neg_samples=True,
     )
 
@@ -178,10 +178,25 @@ def main():
     embeddingnet = tnet.embeddingnet
 
     # Test
-    auc = test_compatibility_auc(test_auc_dataset, embeddingnet)
-    print("AUC: {:.4f}".format(auc))
-    fitb_accuracy = test_fitb_quesitons(test_auc_dataset, embeddingnet)
-    print("Fitb Accuracy: {:.4f}".format(fitb_accuracy))
+    test_num = 10
+    # auc_epochs = []
+    # for epoch in range(test_num):
+    #     auc = test_compatibility_auc(test_auc_dataset, embeddingnet)
+    #     auc_epochs.append(auc)
+    #     print("AUC: {:.4f}".format(auc))
+    # auc_epochs = np.array(auc_epochs)
+    # auc_mean = (np.sum(auc_epochs) - np.max(auc_epochs) - np.min(auc_epochs)) / (test_num - 2)
+    # print(f"average compat AUC is {auc_mean}")
+
+    for option_len in [4, 5, 6]:
+        print("option_len = ", option_len)
+        acc = []
+        for epoch in range(1, test_num + 1):
+            fitb_accuracy = test_fitb_quesitons(test_auc_dataset, embeddingnet, option_len)
+            acc.append(fitb_accuracy)
+        fitb_epochs = np.array(acc)
+    fitb_mean = (np.sum(fitb_epochs) - np.max(fitb_epochs) - np.min(fitb_epochs)) / (test_num - 2)
+    print("Fitb Accuracy: {:.4f}".format(fitb_epochs.mean()))
     # AUC: 0.8413 ACC: 0.5656
 
 

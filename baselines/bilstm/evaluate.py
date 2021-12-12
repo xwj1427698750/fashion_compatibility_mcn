@@ -99,14 +99,14 @@ def compat_test(test_dataset):
 
 
 # Fill in the blank test  # F_ACC: 0.4539, B_ACC: 0.4474, All_ACC: 0.4507
-def fitb_test(test_dataset):
+def fitb_test(test_dataset, option_len=4):
     criterion = nn.CrossEntropyLoss(reduction='none')
     is_correct_f = []
     is_correct_b = []
     is_correct_all = []
     for idx in trange(len(test_dataset)):
-        items, labels, question_part, question_id, options, option_labels = test_dataset.get_fitb_quesiton(idx)
-        lengths = torch.tensor([len(labels) for _ in range(4)]).to(device)  # 4 options
+        items, labels, question_part, question_id, options, option_labels = test_dataset.get_fitb_quesiton(idx, option_len=option_len)
+        lengths = torch.tensor([len(labels) for _ in range(option_len)]).to(device)  # 4 options
         substitute_part = labels.index(question_id)
 
         images = [items]
@@ -129,13 +129,13 @@ def fitb_test(test_dataset):
         b_targets = []
         option_labels = [labels[substitute_part]] + option_labels
         for i in range(1, len(labels)):
-            for j in range(4):
+            for j in range(option_len):
                 if i == substitute_part:
                     f_targets.append(option_labels[j])
                 else:
                     f_targets.append(labels[i])
         for i in range(len(labels) - 2, -1, -1):
-            for j in range(4):
+            for j in range(option_len):
                 if i == substitute_part:
                     b_targets.append(option_labels[j])
                 else:
@@ -146,8 +146,8 @@ def fitb_test(test_dataset):
         b_targets = [test_features_ids.index(i) for i in b_targets]  # (4, 3, 2, 1)
         f_loss = criterion(f_score, torch.tensor(f_targets).to(device))
         b_loss = criterion(b_score, torch.tensor(b_targets).to(device))
-        f_loss = f_loss.reshape(-1, 4)
-        b_loss = b_loss.reshape(-1, 4)
+        f_loss = f_loss.reshape(-1, option_len)
+        b_loss = b_loss.reshape(-1, option_len)
         f_loss = f_loss.sum(dim=0)
         b_loss = b_loss.sum(dim=0)
 
@@ -175,16 +175,20 @@ def fitb_test(test_dataset):
     ))
     return all_acc
 
-test_num = 10
-auc_epochs = []
-fitb_epochs = []
-for epoch in range(test_num):
-    all_auc = compat_test(test_dataset)
-    fitb_acc = fitb_test(test_dataset)
-    auc_epochs.append(all_auc)
-    fitb_epochs.append(fitb_acc)
-auc_epochs = np.array(auc_epochs)
-fitb_epochs = np.array(fitb_epochs)
-print(f"average compat AUC is {auc_epochs.mean()} average fitb acc is {fitb_epochs.mean()}")
+
+for option_len in [4, 5, 6]:
+    test_num = 10
+    auc_epochs = []
+    fitb_epochs = []
+    print("option_len = ", option_len)
+    for epoch in range(test_num):
+        # all_auc = compat_test(test_dataset)
+        fitb_acc = fitb_test(test_dataset, option_len)
+        # auc_epochs.append(all_auc)
+        fitb_epochs.append(fitb_acc)
+    # auc_mean = (np.sum(auc_epochs) - np.max(auc_epochs) - np.min(auc_epochs)) / (test_num - 2)
+    fitb_mean = (np.sum(fitb_epochs) - np.max(fitb_epochs) - np.min(fitb_epochs)) / (test_num - 2)
+    # print(f"average compat AUC is {auc_mean} average fitb acc is {fitb_mean}")
+    print(f"average fitb acc is {fitb_mean}")
 
 

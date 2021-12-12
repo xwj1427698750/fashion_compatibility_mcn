@@ -22,6 +22,7 @@ class CompatModel(nn.Module):
                 layer, whose size is 2048. This representation can be used for
                 compute the Visual Sementic Embedding (VSE) loss.
             vocabulary: the counts of words in the polyvore dataset.
+
         """
         super(CompatModel, self).__init__()
         cnn = resnet50(pretrained=True, need_rep=need_rep)
@@ -140,7 +141,7 @@ class CompatModel(nn.Module):
 
         ## ggnn
         num_nodes = batch_g.number_of_nodes()
-        etypes = torch.zeros(num_nodes).long()
+        etypes = torch.zeros(num_nodes).long().to(images.device)
         features = self.ggnn(batch_g, features, etypes)
 
         # Average pooling

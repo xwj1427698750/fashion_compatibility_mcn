@@ -45,7 +45,7 @@ class BestSaver(object):
         # Get current executing script name
         import __main__, os
         exe_fname=os.path.basename(__main__.__file__)
-        save_path = "model_{}".format(exe_fname.split(".")[0])
+        save_path = "model_attention_{}".format(exe_fname.split(".")[0])
         
         if comment is not None and str(comment):
             save_path = save_path + "_" + str(comment)
@@ -103,7 +103,7 @@ def prepare_dataloaders(root_dir="../data/images/", data_dir="../data/", batch_s
         data_dir=data_dir,
         transform=transform,
         use_mean_img=use_mean_img,
-        data_file="train_no_dup_with_category_3more_name.json",
+        data_file="train.json",
     )
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, collate_fn=collate_fn
@@ -113,7 +113,7 @@ def prepare_dataloaders(root_dir="../data/images/", data_dir="../data/", batch_s
         data_dir=data_dir,
         transform=transform,
         use_mean_img=use_mean_img,
-        data_file="valid_no_dup_with_category_3more_name.json",
+        data_file="valid.json",
     )
     val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, collate_fn=collate_fn
@@ -123,7 +123,7 @@ def prepare_dataloaders(root_dir="../data/images/", data_dir="../data/", batch_s
         data_dir=data_dir,
         transform=transform,
         use_mean_img=use_mean_img,
-        data_file="test_no_dup_with_category_3more_name.json",
+        data_file="test.json",
     )
     test_loader = DataLoader(
         test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, collate_fn=collate_fn

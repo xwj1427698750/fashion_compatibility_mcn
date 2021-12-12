@@ -93,7 +93,7 @@ class CategoryDataset(Dataset):
         return [self.word_to_idx[w] if w in self.word_to_idx else self.word_to_idx['UNK']
                 for w in name.split()]
 
-    def get_fitb_quesiton(self, index):
+    def get_fitb_quesiton(self, index, option_len=4):
         """Generate fill in th blank questions.
         Return:
             images: 5 parts of a outfit
@@ -119,7 +119,7 @@ class CategoryDataset(Dataset):
         option_ids = [set_id]
         options = []
         option_labels = []
-        while len(option_ids) < 4:
+        while len(option_ids) < option_len:
             option = random.choice(self.data)
             if (option[0] in option_ids) or (question_part not in option[1]):
                 continue

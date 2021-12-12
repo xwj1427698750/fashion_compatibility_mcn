@@ -6,13 +6,10 @@ A Test Dataset load pair images, target and condition, conditions are:
     upper_bottom
     upper_shoe
     upper_bag
-    upper_accessory
     bottom_shoe
     bottom_bag
-    bottom_accessory
     shoe_bag
-    shoe_accessory
-    bag_accessory
+
 """
 
 import sys
@@ -37,7 +34,7 @@ config_logging(comment)
 # Hyperparameters
 img_size = 112
 emb_size = 64
-device = torch.device("cuda")
+device = torch.device("cuda:1")
 
 # Dataloader
 transform = torchvision.transforms.Compose(
@@ -52,35 +49,35 @@ transform = torchvision.transforms.Compose(
     ]
 )
 train_dataset = TripletDataset(
-    root_dir="../../data/images/",
+    root_dir="../../data/images2/",
     data_dir="../../data/",
     transform=transform,
-    data_file="train_no_dup_with_category_3more_name.json",
+    data_file="train.json",
 )
 train_loader = DataLoader(train_dataset, 32, shuffle=True, num_workers=4)
 val_dataset = TripletDataset(
-    root_dir="../../data/images/",
+    root_dir="../../data/images2/",
     data_dir="../../data/",
     transform=transform,
-    data_file="valid_no_dup_with_category_3more_name.json",
+    data_file="valid.json",
     is_train=True,
 )
 val_loader = DataLoader(val_dataset, 32, shuffle=False, num_workers=4)
 test_dataset = TripletDataset(
-    root_dir="../../data/images/",
+    root_dir="../../data/images2/",
     data_dir="../../data/",
     transform=transform,
-    data_file="test_no_dup_with_category_3more_name.json",
+    data_file="test.json",
     is_train=True,
 )
 test_loader = DataLoader(test_dataset, 32, shuffle=False, num_workers=4)
 
 val_auc_dataset = CategoryDataset(
-    root_dir="../../data/images/",
+    root_dir="../../data/images2/",
     data_dir="../../data/",
     transform=transform,
     use_mean_img=True,
-    data_file="valid_no_dup_with_category_3more_name.json",
+    data_file="valid.json",
     neg_samples=True,
 )
 

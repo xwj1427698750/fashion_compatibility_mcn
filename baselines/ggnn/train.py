@@ -24,7 +24,7 @@ config_logging(comment)
 
 # Dataloader
 train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader = prepare_dataloaders(
-    root_dir="../../data/images",
+    root_dir="../../data/images2",
     data_dir="../../data",
     batch_size=12,
     collate_fn=graph_collate_fn,
@@ -36,7 +36,7 @@ train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader 
 device = torch.device("cuda:0")
 
 # Model
-model = CompatModel(embed_size=512, need_rep=True, vocabulary=len(train_dataset.vocabulary))
+model = CompatModel( embed_size=512, need_rep=True, vocabulary=len(train_dataset.vocabulary))
 
 # Train process
 def train(model, device, train_loader, val_loader, comment):
@@ -56,7 +56,7 @@ def train(model, device, train_loader, val_loader, comment):
         model.train()
         for batch_num, batch in enumerate(train_loader, 1):
             lengths, batch_g, names, offsets, set_ids, labels, is_compat = batch
-
+            batch_g = batch_g.to(device)
             # Forward
             output, vse_loss = model(batch_g, names)
 
@@ -93,6 +93,7 @@ def train(model, device, train_loader, val_loader, comment):
         targets = []
         for batch in tqdm(val_loader):
             lengths, batch_g, names, offsets, set_ids, labels, is_compat = batch
+            batch_g = batch_g.to(device)
             target = is_compat.float().to(device)
             with torch.no_grad():
                 output, _, _ = model._compute_score(batch_g)
