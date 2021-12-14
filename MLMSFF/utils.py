@@ -44,34 +44,33 @@ class BestSaver(object):
     def __init__(self, comment=None):
         # Get current executing script name
         import __main__, os
-        exe_fname=os.path.basename(__main__.__file__)
-        save_path = "model_{}".format(exe_fname.split(".")[0])
-        
+        exe_fname = os.path.basename(__main__.__file__)
+
+        auc_save_path = "model_auc_{}".format(exe_fname.split(".")[0])
         if comment is not None and str(comment):
-            save_path = save_path + "_" + str(comment)
+            auc_save_path = auc_save_path + "_" + str(comment)
 
-        save_path = save_path + ".pth"
+        auc_save_path = auc_save_path + ".pth"
+        self.auc_save_path = auc_save_path
+        self.best_auc = float('-inf')
+        self.best_auc_epoch = 0  # 取得最佳成绩的轮次
 
-        self.save_path = save_path
-        self.best = float('-inf')
-        self.best_epoch = 0  # 取得最佳成绩的轮次
-
-        # ------------------------ 根据ACC的任务来保存优秀的模型判断 ---------------------------
+        # -------------------- 根据ACC的任务来保存优秀的模型判断 -------------------------
         acc_save_path = "model_acc_{}".format(exe_fname.split(".")[0])
         if comment is not None and str(comment):
-            acc_save_path = acc_save_path + "_acc_" + str(comment)
+            acc_save_path = acc_save_path + "_" + str(comment)
 
         acc_save_path = acc_save_path + ".pth"
         self.acc_save_path = acc_save_path
         self.best_acc = float('-inf')
         self.best_acc_epoch = 0  # 取得最佳成绩的轮次
 
-    def save(self, metric, acc, data, epoch):
-        if metric > self.best:
-            self.best = metric
-            self.best_epoch = epoch
-            torch.save(data, self.save_path)
-            logging.info("Saved best model to {}".format(self.save_path))
+    def save(self, auc, acc, data, epoch):
+        if auc >= self.best_auc:
+            self.best_auc = auc
+            self.best_auc_epoch = epoch
+            torch.save(data, self.auc_save_path)
+            logging.info("Saved best auc model to {}".format(self.auc_save_path))
 
         if acc >= self.best_acc:
             self.best_acc = acc

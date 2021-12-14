@@ -66,7 +66,7 @@ for i, batch in enumerate(test_loader, 1):
         img_ids.append(label.split('_')[-1])
 
     with torch.no_grad():
-        output, _, _, _, _ = model._compute_feature_fusion_score(images)
+        output, _, _, _, _ = model.compute_feature_fusion_score(images)
         output = output.squeeze(dim=1)
         loss = criterion(output, target)
     total_loss.update(loss.item(), images.shape[0])
