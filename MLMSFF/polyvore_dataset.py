@@ -1,19 +1,10 @@
-import csv
-import gzip
-import itertools
 import json
 import os
 import random
-
-import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.utils.rnn as rnn_utils
 import torchvision
 from PIL import Image
-from torch.autograd import Variable
 from torch.utils.data import DataLoader, Dataset
-
 
 class CategoryDataset(Dataset):
     """Dataset for polyvore with 4 categories(upper, bottom, shoe, bag),
@@ -27,15 +18,14 @@ class CategoryDataset(Dataset):
         use_mean_img: Whether to use mean images to fill the blank part
         neg_samples: Whether generate negative sampled outfits
     """
-    def __init__(self, root_dir="../data/images2/",  # images2对应的原始文件目录在/home/ices/xwj/graduation project/dataset/img/img_types/total/
-                 data_file='train.json',
-                 data_dir="../data", transform=None, use_mean_img=True, neg_samples=True):
+    def __init__(self, root_dir="../data/images2/", data_file='train.json', data_dir="../data", transform=None,
+                 use_mean_img=True, neg_samples=True):
         self.root_dir = root_dir
         self.data_dir = data_dir
         self.transform = transform
         self.use_mean_img = use_mean_img
         self.data = json.load(open(os.path.join(data_dir, data_file)))
-        self.data = [(k, v) for k, v in self.data.items()] # k:套装id,v:{套装对象}
+        self.data = [(k, v) for k, v in self.data.items()]  # k:套装id,v:{套装对象}
         self.neg_samples = neg_samples  # if True, will randomly generate negative outfit samples
     
         self.vocabulary, self.word_to_idx = [], {}
@@ -51,15 +41,14 @@ class CategoryDataset(Dataset):
     def __getitem__(self, index):
         """It could return a positive suits or negative suits"""
         set_id, parts = self.data[index]
-        if random.randint(0, 1) and self.neg_samples: #random.randint(0, 1) 随机生成0和1
-            #to_change = random.sample(list(parts.keys()), 3) # random choose 3 negative items
-            to_change = list(parts.keys()) # random choose negative items
+        if random.randint(0, 1) and self.neg_samples:  # random.randint(0, 1) 随机生成0和1
+            to_change = list(parts.keys())  # random choose negative items
         else:
             to_change = []
         imgs = []
         labels = []
         names = []
-        # 负样本的生成方式： 套装里的每一件衣服都是重新生成的，然后组成了一件新的套装
+        # 负样本的生成方式： 套装里的每一件衣服都是重新选择的，然后组成了一件新的套装
         for part in ['upper', 'bottom', 'shoe', 'bag']:
             if part in to_change:  # random choose a image from dataset with same category
                 choice = self.data[index]
@@ -79,48 +68,7 @@ class CategoryDataset(Dataset):
             imgs.append(img)
         input_images = torch.stack(imgs)  # 沿着第0维度拼接图片 [N,C,H,W], N = len(imgs)
         is_compat = (len(to_change) == 0)
-        # offsets后面没用到
-        # list(itertools.accumulate([1,2,3,4])) --> [1, 3, 6, 10]
-        offsets = list(itertools.accumulate([0] + [len(n) for n in names[:-1]]))  # 除了names的最后一个
-        offsets = torch.LongTensor(offsets)
-        return input_images, names, offsets, set_id, labels, is_compat
-
-    # def __getitem__(self, index):
-    #     """It could return a positive suits or negative suits"""
-    #     set_id, parts = self.data[index]
-    #     if random.randint(0, 1) and self.neg_samples: #random.randint(0, 1) 随机生成0和1
-    #         #to_change = random.sample(list(parts.keys()), 3) # random choose 3 negative items
-    #         to_change = [random.randint(0, 3)]  # 随机选择一个负样本
-    #     else:
-    #         to_change = []
-    #     imgs = []
-    #     labels = []
-    #     names = []
-    #     # 负样本的生成方式： 套装里的每一件衣服都是重新生成的，然后组成了一件新的套装
-    #     for part in ['upper', 'bottom', 'shoe', 'bag']:
-    #         if part in to_change:  # random choose a image from dataset with same category
-    #             choice = self.data[index]
-    #             while (choice[0] == set_id) or (part not in choice[1].keys()):
-    #                 choice = random.choice(self.data)
-    #             img_path = os.path.join(self.root_dir, str(choice[1][part]['index'])+'.jpg')
-    #             names.append(torch.LongTensor(self.str_to_idx(choice[1][part]['name'])))
-    #             labels.append('{}_{}'.format(choice[0], choice[1][part]['index']))
-    #         elif part in parts.keys():  # 正样本，原有套装的数据
-    #             img_path = os.path.join(self.root_dir, str(parts[part]['index'])+'.jpg')
-    #             names.append(torch.LongTensor(self.str_to_idx(parts[part]['name'])))
-    #             labels.append('{}_{}'.format(set_id, parts[part]['index']))
-    #         else:
-    #             continue
-    #         img = Image.open(img_path).convert('RGB')
-    #         img = self.transform(img)
-    #         imgs.append(img)
-    #     input_images = torch.stack(imgs)  # 沿着第0维度拼接图片 [N,C,H,W], N = len(imgs)
-    #     is_compat = (len(to_change) == 0)
-    #     # offsets后面没用到
-    #     # list(itertools.accumulate([1,2,3,4])) --> [1, 3, 6, 10]
-    #     offsets = list(itertools.accumulate([0] + [len(n) for n in names[:-1]]))  # 除了names的最后一个
-    #     offsets = torch.LongTensor(offsets)
-    #     return input_images, names, offsets, set_id, labels, is_compat
+        return input_images, names, set_id, labels, is_compat
 
     def __len__(self):
         return len(self.data)
@@ -174,13 +122,11 @@ class CategoryDataset(Dataset):
 def collate_fn(data):
     """Need custom a collate_fn"""
     data.sort(key=lambda x: x[0].shape[0], reverse=True)
-    images,  names, offsets, set_ids, labels, is_compat = zip(*data)
-    lengths = [i.shape[0] for i in images]
+    images, names, set_ids, labels, is_compat = zip(*data)
     is_compat = torch.LongTensor(is_compat)
     names = sum(names, [])
-    offsets = list(offsets)
     images = torch.stack(images)
-    return ( lengths, images, names, offsets, set_ids, labels, is_compat)
+    return (images, names, set_ids, labels, is_compat)
 
 
 

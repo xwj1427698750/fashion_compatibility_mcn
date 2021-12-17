@@ -3,19 +3,27 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils.rnn as rnn_utils
 from resnet import resnet50
+import itertools
+from scipy.special import comb
+
 
 class CompatModel(nn.Module):
-    def __init__(self, embed_size=1024, vocabulary=None, vse_off=False, layer_feature_size=64):
+    def __init__(self, embed_size=1024, vocabulary=None, vse_off=False, layer_size=64, outfit_items=4, multi_layer=4):
         """The Multi-Layered Comparison Network (MCN) for outfit compatibility prediction and diagnosis.
         Args:
             embed_size: the output embedding size of the cnn model, default 1000.
             vocabulary: the counts of words in the polyvore dataset.
             vse_off: whether use visual semantic embedding.
-            layer_feature_size： 多层级特征融合模块，融合后的每一层级的特征维度
+            layer_size： 多层级特征融合模块，融合后的每一层级的特征维度
+            outfit_items: 套装中单品的数量
+            multi_layer: 在多层级特征融合模块使用的特征层数，4表示前4层特征都被使用了，0表示去除了多层级特征融合模块，
+            直接将各个层级的特征直接拼接在一起
         """
         super(CompatModel, self).__init__()
         self.vse_off = vse_off
         self.embedding_size = embed_size
+        self.multi_layer = multi_layer
+        self.outfit_items = outfit_items
 
         cnn = resnet50(pretrained=True, need_rep=True)
         cnn.fc = nn.Linear(cnn.fc.in_features, embed_size)  # 更换原先resnet的最后一层
@@ -29,21 +37,22 @@ class CompatModel(nn.Module):
         self.ada_avgpool2d = nn.AdaptiveAvgPool2d((1, 1))
 
         self.sigmoid = nn.Sigmoid()
-        # 多尺度融合层每一层的卷积核
-        self.filter_sizes = [2, 3, 4]
-        rep_weight = 9  # 套装的个数，正常是4，如果将套装复制然后拼接了一次，就可以得到8了 ,又加了第一件，为了能够获得所有单品的成对的组合，以及三件的组合
 
-        self.layer_convs_1 = nn.ModuleList()  # 4 x 3 , 一共有4层, 每一层有3个卷积核
-        self.layer_convs_2 = nn.ModuleList()  # 4 x 3 , 一共有4层, 每一层有3个卷积核
+        # 多尺度融合模块的网络结构
+        self.filter_sizes = [2, 3, 4]
+
+        self.layer_convs_1 = nn.ModuleList()  # 卷积层容器 4 x 3 , 一共有4层, 每一层有3个卷积核
+        self.layer_convs_2 = nn.ModuleList()  # 卷积层容器 4 x 3 , 一共有4层, 每一层有3个卷积核
         for i in range(4):
             multi_convs1 = nn.ModuleList()
             multi_convs2 = nn.ModuleList()
             for size in self.filter_sizes:
-                # 维度为0上的kernel尺寸是rep_weight - size + 1， 希望将单个分支卷积之后的特征池化为1
-                # 维度为1上的kernel尺寸是rep_weight//2 - size + 2， 这个尺寸的设置目的是希望不同size大小的分支经过池化后的尺寸接近
-                pool_kernel_size = (rep_weight - size + 1, rep_weight // 2 - size + 2)
+                # 维度为0上的kernel尺寸是comb(outfit_items, size)， 希望将单个分支卷积之后的特征池化为1
+                # 维度为1上的kernel尺寸是outfit_items - size + 1， 这个尺寸的设置目的是希望不同size大小的分支经过池化后的尺寸接近
+                size_comb = int(comb(outfit_items, size))  # 计算不同尺寸卷积核对应的组合数 C(4, 2), C(4, 3), C(4, 4),
+                pool_kernel_size = (size_comb, outfit_items - size + 1)
                 conv_net1 = nn.Sequential(
-                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(1, size)),
+                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(size, size)),
                     nn.BatchNorm2d(1),
                     nn.ReLU(),
                     nn.AvgPool2d(kernel_size=pool_kernel_size),
@@ -52,7 +61,7 @@ class CompatModel(nn.Module):
                 multi_convs1.append(conv_net1)
 
                 conv_net2 = nn.Sequential(
-                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(1, size)),
+                    nn.Conv2d(in_channels=1, out_channels=1, kernel_size=size, stride=(size, size)),
                     nn.BatchNorm2d(1),
                     nn.ReLU(),
                     nn.AvgPool2d(kernel_size=pool_kernel_size),
@@ -63,32 +72,45 @@ class CompatModel(nn.Module):
             self.layer_convs_1.append(multi_convs1)
             self.layer_convs_2.append(multi_convs2)
 
-        self.layer_convs_fcs = nn.ModuleList()
         fashion_item_rep_len = [0, 256, 512, 1024, 2048]  # 从resnet抽取的4层特征的维度（0是为了代码编写方便添加的）
-        fcs_output_size = [0, layer_feature_size, layer_feature_size, layer_feature_size, layer_feature_size]
+        fcs_output_size = [0, layer_size, layer_size, layer_size, layer_size]
 
+        # 移除多层级特征融合模块的消融实验，直接拼接各层级特征的结构
+        concat_input_size = 0  # 各层级的特征直接拼起来的维度大小，计算结果参见下方
+
+        # 多层级特征融合模块的网络结构
+        self.layer_convs_fcs = nn.ModuleList()
         for i in range(1, len(fashion_item_rep_len)):
             rep_len = fashion_item_rep_len[i]
             input_size = 0
             for size in self.filter_sizes:
                 stride = size
+
                 # 卷积操作后张量的尺寸计算公式: (W-F) // S + 1
                 wi = (rep_len - size) // stride + 1
-                hi = rep_weight - size + 1
-                # 池化操作后张量的尺寸计算公式: (W-F) // S + 1
-                pool_stride = rep_weight // 2 - size + 2
-                wi = wi // pool_stride  # 由 (wi - pool_stride) // pool_stride + 1 简化而来
-                hi = 1                  # 由 hi = (hi - hi) // hi + 1 简化得来
-                input_size = input_size + hi * wi
-            input_size = input_size * 2 + fcs_output_size[i - 1]
-            output_size = fcs_output_size[i]
+                hi = int(comb(self.outfit_items, size))  # 组合数的个数
 
+                # 池化操作后张量的尺寸
+                pool_stride = self.outfit_items - size + 1
+                wi = wi // pool_stride  # 由 (wi - pool_stride) // pool_stride + 1 简化而来
+                hi = 1  # 由 hi = (hi - hi) // hi + 1 简化得来
+                input_size += hi * wi  # input_size : 3个分支处理过的特征转换成一维向量，然后拼接在一起的长度
+                concat_input_size += hi * wi
+            # 有两组卷积，所以向量长度X2, 然后拼接上一层多尺度特征融合模块输出向量的长度fcs_output_size[i-1]
+            input_size = input_size * 2 + fcs_output_size[i - 1]
+
+            output_size = fcs_output_size[i]
             linear1 = nn.Linear(input_size, output_size)
             linear2 = nn.Linear(output_size, output_size)
             multi_scale_fc = nn.Sequential(linear1, nn.ReLU(), linear2)
             self.layer_convs_fcs.append(multi_scale_fc)
 
-        self.multi_layer_predictor = nn.Linear(layer_feature_size, 1)
+        if self.multi_layer > 0:  # 正常使用多层级特征融合模块
+            self.multi_layer_predictor = nn.Linear(layer_size, 1)
+        else:  # 移除多层级特征融合模块的消融实验
+            self.multi_layer_predictor = nn.Linear(concat_input_size*2, 1)  # 将两组的张量拼接起来的尺寸
+            # concat_input_size*2 = 4472
+
 
     def forward(self, images, names):
         """
@@ -150,8 +172,7 @@ class CompatModel(nn.Module):
 
         return vse_loss
 
-
-    def compute_feature_fusion_score(self, images, activate=True):
+    def compute_feature_fusion_score(self, images):
         """
         Extract feature vectors from input images.
         Return:
@@ -166,52 +187,84 @@ class CompatModel(nn.Module):
         rep_l1, rep_l2, rep_l3, rep_l4, rep_last_2th = rep  # rep_last_2th是resnet去除最后的分类器后的特征表示
         # [64,256,56,56],[64,512,28,28],[64,1024,14,14],[64, 2048, 7, 7]
 
-        #  多尺度特征融合
         rep_list = [rep_l1, rep_l2, rep_l3, rep_l4]
         multi_scale_concats = []
 
-        for i, rep_li in enumerate(rep_list):
-            # 多尺度特征融合模块
-            # 对原有的特征进行组合，不同的卷积核大小对应不同的分支
+        # 多尺度特征融合模块
+        for layer, rep_li in enumerate(rep_list):
             rep_li = self.ada_avgpool2d(rep_li).squeeze().reshape(batch_size, 1, item_num, -1)
             # rep_l1 (16,1,4,256), rep_l2 (16,1,4,512), rep_l3 (16,1,4,1024), rep_l4 (16,1,4,2048)
-            shape = rep_li.shape
-            rep_li_copy = torch.cat((rep_li[:, :, 0, :], rep_li[:, :, 2, :], rep_li[:, :, 1, :], rep_li[:, :, 3, :],
-                                     rep_li[:, :, 0, :]), 2).reshape(shape[0], shape[1], shape[2] + 1, shape[3])
-            rep_li_double = torch.cat((rep_li, rep_li_copy), 2)  # (16,1,9,256), rep_l2 (16,1,9,512), rep_l3 (16,1,9,1024), rep_l4 (16,1,9,2048)
 
-            # 采用不同尺寸的卷积核来处理特征，一共有两组
-            multi_scale_li_feature = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_convs_1[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
-            cat_feature1 = torch.cat(multi_scale_li_feature, 1)
-            # cat_feature [16 x (21 + 14 + 16)], [16 x (42 + 28 + 32)], [16 x (85 + 57 + 64)], [16 x (170 + 114 + 128 )]
+            multi_scale_li_feature1 = []
+            multi_scale_li_feature2 = []
 
-            multi_scale_li_feature2 = [layer_i_convs_scale(rep_li_double) for layer_i_convs_scale in self.layer_convs_2[i]]  # 2x2, 3x3, 4x4  3个尺寸的卷积核作用后的结果
+            # 对原有的特征进行组合，不同的卷积核大小对应不同的分支
+            for idx, size in enumerate(self.filter_sizes):
+                rep_li_combs = []
+                for index_tuple in itertools.combinations(range(4), size):
+                    # index_tuple:索引组合， size=2 形如(0,1).., size=3, 形如(0,1,2), size=4,为（0,1,2,3)
+                    combs_list = [rep_li[:, :, i, :] for i in index_tuple]
+                    combs = torch.stack(combs_list, 2)
+                    rep_li_combs.append(combs)
+
+                rep_li_combs = torch.cat(rep_li_combs, 2)
+                # 在不同size和不同层级的情况下，rep_li_combinations的尺寸
+                # C(4,2) 6种组合，每个组合含有2件单品特征， 6*2 = 12
+                # C(4,3) 4种组合，每个组合含有3件单品特征， 4*3 = 12
+                # C(4,4) 1种组合，每个组合含有4件单品特征， 4*1 = 4
+                # rep_l1_combs:
+                # size = 2 --> (16,1,12,256),  size = 3 --> (16,1,12,256),  size = 4 --> (16,1,4,256)
+                # rep_l2_combs:
+                # size = 2 --> (16,1,12,512),  size = 3 --> (16,1,12,512),  size = 4 --> (16,1,4,512)
+                # rep_l3_combs:
+                # size = 2 --> (16,1,12,1024), size = 3 --> (16,1,12,1024), size = 4 --> (16,1,4,1024)
+                # rep_l4_combs:
+                # size = 2 --> (16,1,12,2048), size = 3 --> (16,1,12,2048), size = 4 --> (16,1,4,2048)
+
+                multi_scale_li_feature1.append(self.layer_convs_1[layer][idx](rep_li_combs))
+                multi_scale_li_feature2.append(self.layer_convs_2[layer][idx](rep_li_combs))
+
+            # 不同特征层的cat_feature的特征尺度（16为batch_size） rep_l1: [16, 148], rep_l2: [16, 298], rep_l3: [16, 596], rep_l4: [16, 1194],
+            cat_feature1 = torch.cat(multi_scale_li_feature1, 1)
             cat_feature2 = torch.cat(multi_scale_li_feature2, 1)
-            # cat_feature [16 x (21 + 14 + 16)], [16 x (42 + 28 + 32)], [16 x (85 + 57 + 64)], [16 x (170 + 114 + 128 )]
 
-            # 将两组的特征拼接起来
+            # 将两组的特征拼接起来，尺寸变双倍 rep_l1: [16, 148*2], rep_l2: [16, 298*2], rep_l3: [16, 596*2], rep_l4: [16, 1194*2],
             cat_feature_fuse = torch.cat((cat_feature1, cat_feature2), 1)
-            multi_scale_concats.append(cat_feature_fuse)  # [16, 3x255 + 2x254 + 1x253], [16, 3*511 + 2*510 + 1*509], [16, 3*1023 + 2*1022 + 1*1021], [16, 3*2047 + 2*2046 + 1*2045]
+            multi_scale_concats.append(cat_feature_fuse)
 
         # 多层级特征融合模块
-        layer1_to_2 = F.relu(self.layer_convs_fcs[0](multi_scale_concats[0]))              # [16, 64]
-        layer2_concat_layer1 = torch.cat((layer1_to_2, multi_scale_concats[1]), 1)
-        layer2_to_3 = F.relu(self.layer_convs_fcs[1](layer2_concat_layer1) + layer1_to_2)     # [16, 64]
-        layer3_concat_layer2 = torch.cat((layer2_to_3, multi_scale_concats[2]), 1)
-        layer3_to_4 = F.relu(self.layer_convs_fcs[2](layer3_concat_layer2) + layer2_to_3)    # [16, 64]
-        layer4_concat_layer3 = torch.cat((layer3_to_4, multi_scale_concats[3]), 1)
-        layer4_to_out = F.relu(self.layer_convs_fcs[3](layer4_concat_layer3) + layer3_to_4)  # [16, 64]
+        if self.multi_layer > 0:
+            layer1_to_2 = F.relu(self.layer_convs_fcs[0](multi_scale_concats[0]))  # [16, layer_feature_size]
+            if self.multi_layer == 1:
+                layer_out = layer1_to_2  # 第一层的特征默认保存
 
-        out = self.multi_layer_predictor(layer4_to_out)
-        if activate:
-            out = self.sigmoid(out)
+            layer2_concat_layer1 = torch.cat((layer1_to_2, multi_scale_concats[1]), 1)
+            layer2_to_3 = F.relu(self.layer_convs_fcs[1](layer2_concat_layer1) + layer1_to_2)  # [16, layer_feature_size]
+            if self.multi_layer == 2:
+                layer_out = layer2_to_3
+
+            layer3_concat_layer2 = torch.cat((layer2_to_3, multi_scale_concats[2]), 1)
+            layer3_to_4 = F.relu(self.layer_convs_fcs[2](layer3_concat_layer2) + layer2_to_3)  # [16, layer_feature_size]
+            if self.multi_layer == 3:
+                layer_out = layer3_to_4
+
+            layer4_concat_layer3 = torch.cat((layer3_to_4, multi_scale_concats[3]), 1)
+            layer4_to_out = F.relu(self.layer_convs_fcs[3](layer4_concat_layer3) + layer3_to_4)  # [16, layer_feature_size]
+            if self.multi_layer == 4:
+                layer_out = layer4_to_out
+
+        else:  # self.multi_layer == 0, 对应的是移除多层级特征融合模块的消融实验，直接将各层级特征直接拼接在一起
+            layer_out = torch.cat(multi_scale_concats, 1)  # [16, 4472]
+
+        out = self.multi_layer_predictor(layer_out)
+        out = self.sigmoid(out)
 
         return out, features, rep_last_2th
 
-if __name__ == "__main__":
 
+if __name__ == "__main__":
     device = torch.device("cpu:0")
     model = CompatModel(embed_size=1000, vocabulary=1000).to(device)
     images = torch.ones([16, 4, 3, 224, 224])
-    names = [torch.ones([5]) for _ in range(80)]
-    output, vse_loss, tmasks_loss, features_loss = model(images, names)
+    names = [torch.ones([5]) for _ in range(64)]
+    output, vse_loss = model(images, names)

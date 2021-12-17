@@ -25,11 +25,11 @@ def train(model, device, train_loader, val_loader, comment, clip):
         # Train phase
         model.train()
         for batch_num, batch in enumerate(train_loader, 1):
-            _, images, names, _, _, _, is_compat = batch
+            images, names, _, _, is_compat = batch
             images = images.to(device)
             # is_compat is a tensor([0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0]) length = batch_size
             # images.shape [16, 4, 3, 224, 224], [batch_size, item_length, C, H, W ]
-            # names is a list with length 80 = 16 * 5, each item of which is a tensor 1-dim like:tensor([772,  68,  72, 208])
+            # names is a list with length 80 = 16 * 4, each item of which is a tensor 1-dim like: tensor([772,  68,  72, 208])
             # Forward   前向训练只需要 图像和文本数据
 
             output, vse_loss = model(images, names)
@@ -68,7 +68,7 @@ def train(model, device, train_loader, val_loader, comment, clip):
         outputs = []
         targets = []
         for batch_num, batch in enumerate(val_loader, 1):
-            _, images, names, _, _, _, is_compat = batch
+            images, names, _, _, is_compat = batch
             images = images.to(device)
             target = is_compat.float().to(device)
             with torch.no_grad():
@@ -91,19 +91,26 @@ def train(model, device, train_loader, val_loader, comment, clip):
 
         # Save best model
         saver.save(auc, acc, model.state_dict(), epoch)
-        logging.info("Best AUC is : {:.4f} Best_epoch is {}".format(saver.best_auc, saver.best_auc_epoch))  # 输出已经选择好的最佳模型
-        logging.info("Best ACC is : {:.4f} Best_epoch is {}".format(saver.best_acc, saver.best_acc_epoch))  # 输出已经选择好的最佳模型
+        logging.info(
+            "Best AUC is : {:.4f} Best_auc_epoch is {}".format(saver.best_auc, saver.best_auc_epoch))  # 输出已经选择好的最佳模型
+        logging.info(
+            "Best ACC is : {:.4f} Best_acc_epoch is {}".format(saver.best_acc, saver.best_acc_epoch))  # 输出已经选择好的最佳模型
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Fashion Compatibility Training.')
-    parser.add_argument('--vse_off', action="store_true")
-    parser.add_argument('--comment', type=str, default="MLMMSFF")
-    parser.add_argument('--clip', type=int, default=5)
-    parser.add_argument('--layer_feature_size', type=int, default=64)
+    parser.add_argument('--comment', help="模型存储的名字（结合utils.BestSaver给出完整的名字）", type=str,
+                        default="MLMSFF_layer_size(256)_multi_layer(4)")
     parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--clip', help="训练过程中梯度更新的大小限制", type=int, default=5)
+    parser.add_argument('--vse_off', help="是否关闭vse模块", type=bool, default=False)
+    parser.add_argument('--layer_size', help="多层级特征融合模块中，原有特征被映射到的新维度", type=int, default=256)
+    parser.add_argument('--multi_layer', help="取值范围是0-4, 在多层级特征融合模块中，数字i表示前i层特征被用，",
+                        type=int, default=4)
     args = parser.parse_args()
 
     print(args)
+
     # Logger
     config_logging(args.comment)
 
@@ -114,5 +121,8 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = CompatModel(vocabulary=len(train_dataset.vocabulary), vse_off=args.vse_off, layer_feature_size=args.layer_feature_size)
+    model = CompatModel(vocabulary=len(train_dataset.vocabulary), vse_off=args.vse_off, layer_size=args.layer_size,
+                        multi_layer=args.multi_layer)
     train(model, device, train_loader, val_loader, args.comment, args.clip)
+
+    print(args)  # 方便查找存储的模型

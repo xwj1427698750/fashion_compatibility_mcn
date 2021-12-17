@@ -1,12 +1,8 @@
 import logging
-
 import torch
-import torch.nn as nn
 import torchvision
 from torch.utils.data import DataLoader, Dataset
-
 from polyvore_dataset import CategoryDataset, collate_fn
-
 
 class AverageMeter(object):
     """Computes and stores the average and current value.
@@ -42,13 +38,9 @@ class BestSaver(object):
     >>> saver.save(0.6, model.state_dict())
     """
     def __init__(self, comment=None):
-        # Get current executing script name
-        import __main__, os
-        exe_fname = os.path.basename(__main__.__file__)
-
-        auc_save_path = "model_auc_{}".format(exe_fname.split(".")[0])
+        auc_save_path = "auc"
         if comment is not None and str(comment):
-            auc_save_path = auc_save_path + "_" + str(comment)
+            auc_save_path = str(comment) + "_" + auc_save_path  # XXX_auc
 
         auc_save_path = auc_save_path + ".pth"
         self.auc_save_path = auc_save_path
@@ -56,9 +48,9 @@ class BestSaver(object):
         self.best_auc_epoch = 0  # 取得最佳成绩的轮次
 
         # -------------------- 根据ACC的任务来保存优秀的模型判断 -------------------------
-        acc_save_path = "model_acc_{}".format(exe_fname.split(".")[0])
+        acc_save_path = "acc"
         if comment is not None and str(comment):
-            acc_save_path = acc_save_path + "_" + str(comment)
+            acc_save_path = str(comment) + "_" + acc_save_path  # XXX_acc
 
         acc_save_path = acc_save_path + ".pth"
         self.acc_save_path = acc_save_path
