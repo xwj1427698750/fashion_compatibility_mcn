@@ -133,7 +133,9 @@ if __name__ == "__main__":
 
     model = MultiModuleFashionCompatPrediction(vocab_len=len(train_dataset.vocabulary),
                                                attention_heads=args.attention_heads,
-                                               feature_size=args.feature_size, device=device).to(device)
+                                               feature_size=args.feature_size, device=device,
+                                               enc_desc_off=args.enc_desc_off,
+                                               input_off=args.input_off, generator_off=args.generator_off).to(device)
     model.load_state_dict(torch.load(args.model_path))
 
     test(model, device, args.MLMSFF_off, args.test_num)
