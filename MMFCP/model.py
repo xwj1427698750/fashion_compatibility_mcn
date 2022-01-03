@@ -230,20 +230,24 @@ class FeatureFusion(nn.Module):
 
 #  变分转换模块
 class Transformer(nn.Module):
-    def __init__(self, input_size=96, output_size=96):
+    def __init__(self, input_size=96, output_size=96, enc_desc_off=True):
         super(Transformer, self).__init__()
-        self.fc1 = nn.Sequential(
-            nn.Linear(input_size * 2, output_size),
-        )
-        self.fc2 = nn.Sequential(
-            nn.Linear(input_size * 2, output_size),
-        )
+        # 默认不使用文本信息
+        self.fc1 = nn.Linear(input_size, output_size)
+        self.fc2 = nn.Linear(input_size, output_size)
+        self.enc_desc_off = enc_desc_off
+
+        if not enc_desc_off:
+            self.fc1 = nn.Linear(input_size * 2, output_size)
+            self.fc2 = nn.Linear(input_size * 2, output_size)
 
     def forward(self, enc_x, enc_desc, device):
         """
         enc_x, enc_desc :[batch_size, output_size]
         """
-        fuse_feature = torch.cat((enc_x, enc_desc), 1)
+        fuse_feature = enc_x  # 默认不使用文本信息
+        if not self.enc_desc_off:  # 使用文本信息
+            fuse_feature = torch.cat((enc_x, enc_desc), 1)
         z_mean = self.fc1(fuse_feature)
         z_log_var = self.fc2(fuse_feature)
         epsilon = torch.randn(size=z_mean.shape).to(device)
@@ -501,7 +505,8 @@ class MultiModuleFashionCompatPrediction(nn.Module):
 
         self.get_feature_fuse = FeatureFusion(input_size=feature_size, output_size=feature_size)
 
-        self.transformer = Transformer(input_size=feature_size, output_size=feature_size)
+        #  变分转换模块， 默认不使用文本信息
+        self.transformer = Transformer(input_size=feature_size, output_size=feature_size, enc_desc_off=enc_desc_off)
 
         self.generator = Generator(input_size=feature_size, output_size=feature_size)
 
@@ -631,4 +636,3 @@ class MultiModuleFashionCompatPrediction(nn.Module):
         neg_out = self.get_compat_prob(neg_outfit)  # (batch_size, 1)
 
         return low_resolution_img, high_resolution_img, diff_score, z_mean, z_log_var, pos_out, neg_out
-
