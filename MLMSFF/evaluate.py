@@ -80,7 +80,7 @@ def test(model, device, test_loader, test_dataset, test_num=10):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Fashion Compatibility Evaluation.')
-    parser.add_argument('--vse_off', type=bool, default=False)
+    parser.add_argument('--vse_off', action="store_true")
     parser.add_argument('--model_path', type=str, default="./MLMMSFF_combination_auc.pth")
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--layer_size', type=int, default=256)

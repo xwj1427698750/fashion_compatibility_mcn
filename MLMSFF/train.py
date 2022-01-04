@@ -103,7 +103,7 @@ if __name__ == "__main__":
                         default="MLMSFF_layer_size(256)_multi_layer(4)")
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--clip', help="训练过程中梯度更新的大小限制", type=int, default=5)
-    parser.add_argument('--vse_off', help="是否关闭vse模块", type=bool, default=False)
+    parser.add_argument('--vse_off', help="是否关闭vse模块，默认不移除vse模块", action="store_true")
     parser.add_argument('--layer_size', help="多层级特征融合模块中，原有特征被映射到的新维度", type=int, default=256)
     parser.add_argument('--multi_layer', help="取值范围是0-4, 在多层级特征融合模块中，数字i表示前i层特征被用，",
                         type=int, default=4)

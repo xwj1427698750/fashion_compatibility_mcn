@@ -50,7 +50,7 @@ def get_compat_result(model, out_dir='compat_show/', img_source_path='../data/im
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Fashion Compatibility Evaluation.')
-    parser.add_argument('--vse_off', type=bool, default=False)
+    parser.add_argument('--vse_off', action="store_true")
     parser.add_argument('--model_path', type=str, default="./MLMSFF_layer_size(256)_multi_layer(4)_auc.pth")
     parser.add_argument('--layer_size', type=int, default=256)
     parser.add_argument('--multi_layer', type=int, default=4)
